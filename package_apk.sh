@@ -15,12 +15,19 @@ else
 fi
 
 # 从 app/build.gradle.kts 读取 versionName
-VERSION="$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -1 | sed 's/.*"\([^"]*\)".*/\1/')"
-if [[ -z "$VERSION" ]]; then
-  VERSION="unknown"
+# macOS 自带 BSD grep 对 \s 支持不稳，且 set -u 下需保证 VERSION 必有默认值，避免未赋值即展开
+VERSION="unknown"
+_VERSION_LINE="$(
+  grep -E '^[[:space:]]*versionName[[:space:]]*=' app/build.gradle.kts 2>/dev/null | head -1
+)" || true
+if [[ -n "${_VERSION_LINE}" ]]; then
+  _V="$(printf '%s' "${_VERSION_LINE}" | sed 's/.*"\([^"]*\)".*/\1/')" || true
+  if [[ -n "${_V}" ]]; then
+    VERSION="${_V}"
+  fi
 fi
 
-echo ">>> 构建 Debug APK（versionName=$VERSION）..."
+printf '>>> 构建 Debug APK（versionName=%s）...\n' "${VERSION}"
 ./gradlew "${GRADLE_TASKS[@]}"
 
 SRC="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
