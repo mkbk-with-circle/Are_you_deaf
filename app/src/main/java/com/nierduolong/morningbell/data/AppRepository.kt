@@ -1,10 +1,10 @@
 package com.nierduolong.morningbell.data
 
 import android.content.Context
+import android.net.Uri
 import com.nierduolong.morningbell.alarm.AlarmScheduler
 import com.nierduolong.morningbell.core.AlarmTimeCalculator
 import com.nierduolong.morningbell.core.BirthdayReminderLogic
-import com.nierduolong.morningbell.core.MorningMicroTaskDefaults
 import com.nierduolong.morningbell.core.StickyThemeRegistry
 import com.nierduolong.morningbell.data.db.AlarmEntity
 import com.nierduolong.morningbell.data.db.AppDatabase
@@ -13,10 +13,10 @@ import com.nierduolong.morningbell.data.db.ChainAlarmStepEntity
 import com.nierduolong.morningbell.data.db.ChainDoneDayEntity
 import com.nierduolong.morningbell.data.db.BirthdayEntity
 import com.nierduolong.morningbell.data.db.BirthdayReminderEntity
+import com.nierduolong.morningbell.data.db.ReminderTemplateEntity
 import com.nierduolong.morningbell.data.db.GoalEntity
-import com.nierduolong.morningbell.data.db.MicroTaskCustomEntity
-import com.nierduolong.morningbell.data.db.MicroTaskDayEntity
 import com.nierduolong.morningbell.data.db.MoodEntity
+import com.nierduolong.morningbell.data.db.VideoDiaryEntryEntity
 import com.nierduolong.morningbell.data.db.WakeDayEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +40,8 @@ class AppRepository(
     private val wakes = db.wakeDao()
     private val goals = db.goalDao()
     private val birthdays = db.birthdayDao()
-    private val microTasks = db.microTaskDao()
+    private val reminderTemplates = db.reminderTemplateDao()
+    private val videoDiary = db.videoDiaryDao()
     private val wakeSettings = WakeSettings(context)
     private val stickyThemeSettings = StickyThemeSettings(context)
     private val wakeThresholdMinuteOfDayState = MutableStateFlow(wakeSettings.getMinuteOfDay())
@@ -54,7 +55,8 @@ class AppRepository(
     val wakeFlow: Flow<List<WakeDayEntity>> = wakes.observeRecent()
     val goalFlow: Flow<List<GoalEntity>> = goals.observeGoals()
     val birthdayFlow: Flow<List<BirthdayEntity>> = birthdays.observeBirthdays()
-    val microTaskCustomFlow: Flow<List<MicroTaskCustomEntity>> = microTasks.observeCustom()
+    val reminderTemplateFlow: Flow<List<ReminderTemplateEntity>> = reminderTemplates.observeTemplates()
+    val videoDiaryEntryFlow: Flow<List<VideoDiaryEntryEntity>> = videoDiary.observeAll()
 
     /** 早起统计起始时间（0 点起算分钟），用于界面与解锁判断同步 */
     val wakeThresholdMinuteOfDayFlow: StateFlow<Int> = wakeThresholdMinuteOfDayState.asStateFlow()
@@ -382,8 +384,25 @@ class AppRepository(
     suspend fun upsertBirthday(b: BirthdayEntity): Long =
         withContext(Dispatchers.IO) { birthdays.upsertBirthday(b) }
 
+    /** 某人生日下的提醒列表（随增删实时刷新） */
+    fun remindersForBirthdayFlow(birthdayId: Long): Flow<List<BirthdayReminderEntity>> =
+        birthdays.observeRemindersForBirthday(birthdayId)
+
     suspend fun upsertReminder(r: BirthdayReminderEntity): Long =
         withContext(Dispatchers.IO) { birthdays.upsertReminder(r) }
+
+    suspend fun insertReminderTemplate(text: String) =
+        withContext(Dispatchers.IO) {
+            val t = text.trim()
+            if (t.isNotEmpty()) {
+                reminderTemplates.insert(ReminderTemplateEntity(text = t))
+            }
+        }
+
+    suspend fun deleteReminderTemplate(id: Long) =
+        withContext(Dispatchers.IO) {
+            reminderTemplates.delete(id)
+        }
 
     suspend fun deleteBirthday(id: Long) =
         withContext(Dispatchers.IO) {
@@ -425,64 +444,10 @@ class AppRepository(
     suspend fun loadReminders(birthdayId: Long): List<BirthdayReminderEntity> =
         withContext(Dispatchers.IO) { birthdays.remindersFor(birthdayId) }
 
-    suspend fun addCustomMicroTask(text: String) =
-        withContext(Dispatchers.IO) {
-            val t = text.trim()
-            if (t.isNotEmpty()) {
-                microTasks.insertCustom(MicroTaskCustomEntity(text = t))
-            }
-        }
-
-    suspend fun deleteCustomMicroTask(id: Long) =
-        withContext(Dispatchers.IO) {
-            microTasks.deleteCustom(id)
-        }
-
-    /** 换一条今日小任务（未完成时） */
-    suspend fun swapTodayMicroTask(): MicroTaskFlowSlot =
-        withContext(Dispatchers.IO) {
-            val dayEpoch = LocalDate.now().toEpochDay()
-            var row = microTasks.getDay(dayEpoch) ?: ensureMicroTaskForDay(dayEpoch)
-            if (row.completed) {
-                return@withContext MicroTaskFlowSlot(taskText = row.taskText, completed = true)
-            }
-            val pool = poolForMicroTasks().distinct()
-            val withoutCurrent = pool.filter { it != row.taskText }
-            val usePool = if (withoutCurrent.isNotEmpty()) withoutCurrent else pool
-            val seed = dayEpoch xor ((row.swapCount + 1).toLong() shl 17)
-            val next = MorningMicroTaskDefaults.pickTaskFromPool(usePool, seed)
-            row = row.copy(taskText = next, swapCount = row.swapCount + 1)
-            microTasks.upsertDay(row)
-            MicroTaskFlowSlot(taskText = row.taskText, completed = false)
-        }
-
-    /** 标记今日小任务完成并返回一句反馈文案 */
-    suspend fun completeTodayMicroTask(): MicroTaskCompleteResult =
-        withContext(Dispatchers.IO) {
-            val dayEpoch = LocalDate.now().toEpochDay()
-            var row = microTasks.getDay(dayEpoch) ?: ensureMicroTaskForDay(dayEpoch)
-            val now = System.currentTimeMillis()
-            if (row.completed) {
-                val seed = dayEpoch xor (row.completedAtMillis ?: now)
-                return@withContext MicroTaskCompleteResult(
-                    slot = MicroTaskFlowSlot(row.taskText, true),
-                    praise = MorningMicroTaskDefaults.pickPraise(seed),
-                )
-            }
-            row = row.copy(completed = true, completedAtMillis = now)
-            microTasks.upsertDay(row)
-            val seed = dayEpoch xor now xor row.taskText.hashCode().toLong()
-            MicroTaskCompleteResult(
-                slot = MicroTaskFlowSlot(row.taskText, true),
-                praise = MorningMicroTaskDefaults.pickPraise(seed),
-            )
-        }
-
     /** 组装关闭闹钟后的卡片内容 */
     suspend fun buildDismissFlowCards(): DismissFlowModel =
         withContext(Dispatchers.IO) {
             val today = LocalDate.now()
-            val dayEpoch = today.toEpochDay()
             val bList = birthdays.allBirthdays()
             val rList = birthdays.allReminders()
             val due =
@@ -493,41 +458,11 @@ class AppRepository(
                 )
             val gs = goals.activeGoals()
             val sticky = buildSticky(gs, today)
-            val microRow = ensureMicroTaskForDay(dayEpoch)
-            val microTask =
-                MicroTaskFlowSlot(
-                    taskText = microRow.taskText,
-                    completed = microRow.completed,
-                )
             DismissFlowModel(
                 birthdayCards = due,
                 sticky = sticky,
-                microTask = microTask,
             )
         }
-
-    private suspend fun poolForMicroTasks(): List<String> {
-        val custom =
-            microTasks.allCustom().map { it.text.trim() }.filter { it.isNotBlank() }
-        return MorningMicroTaskDefaults.builtinTasks + custom
-    }
-
-    /** 若无当日行则抽一条并落库 */
-    private suspend fun ensureMicroTaskForDay(dayEpoch: Long): MicroTaskDayEntity {
-        microTasks.getDay(dayEpoch)?.let { return it }
-        val pool = poolForMicroTasks()
-        val text = MorningMicroTaskDefaults.pickTaskFromPool(pool, dayEpoch)
-        val row =
-            MicroTaskDayEntity(
-                dayEpoch = dayEpoch,
-                taskText = text,
-                completed = false,
-                completedAtMillis = null,
-                swapCount = 0,
-            )
-        microTasks.upsertDay(row)
-        return row
-    }
 
     private suspend fun buildSticky(
         activeGoals: List<GoalEntity>,
@@ -590,16 +525,33 @@ class AppRepository(
     data class DismissFlowModel(
         val birthdayCards: List<BirthdayReminderLogic.DueCard>,
         val sticky: StickyPayload,
-        val microTask: MicroTaskFlowSlot,
     )
 
-    data class MicroTaskFlowSlot(
-        val taskText: String,
-        val completed: Boolean,
-    )
+    /** 视频日记根目录（应用专属外置或内部 files）绝对路径，便于在文件管理器中查找 */
+    fun getVideoDiaryRootAbsolutePath(): String = VideoDiaryStorage.rootDir(context).absolutePath
 
-    data class MicroTaskCompleteResult(
-        val slot: MicroTaskFlowSlot,
-        val praise: String,
-    )
+    /** 将相册/文件中的视频复制到 年/月/日 子目录，并落库。失败抛异常由界面提示。 */
+    suspend fun importVideoDiary(
+        uri: Uri,
+        dayEpoch: Long,
+    ): Long =
+        withContext(Dispatchers.IO) {
+            val imported = VideoDiaryStorage.importFromUri(context, uri, dayEpoch).getOrThrow()
+            videoDiary.insert(
+                VideoDiaryEntryEntity(
+                    dayEpoch = dayEpoch,
+                    relativePath = imported.relativePath,
+                    displayName = imported.displayName,
+                    sizeBytes = imported.sizeBytes,
+                    addedAtMillis = System.currentTimeMillis(),
+                ),
+            )
+        }
+
+    suspend fun deleteVideoDiaryEntry(id: Long) =
+        withContext(Dispatchers.IO) {
+            val e = videoDiary.getById(id) ?: return@withContext
+            VideoDiaryStorage.deletePhysicalFile(context, e.relativePath)
+            videoDiary.deleteById(id)
+        }
 }

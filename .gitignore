@@ -7,3 +7,5 @@ local.properties
 .DS_Store
 dist/
 .kotlin/
+# 网盘/同步工具产生的临时状态文件
+*.baiduyun.uploading.cfg

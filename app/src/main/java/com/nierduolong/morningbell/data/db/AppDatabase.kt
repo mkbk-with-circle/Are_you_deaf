@@ -15,13 +15,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         GoalEntity::class,
         BirthdayEntity::class,
         BirthdayReminderEntity::class,
-        MicroTaskCustomEntity::class,
-        MicroTaskDayEntity::class,
+        ReminderTemplateEntity::class,
         ChainAlarmGroupEntity::class,
         ChainAlarmStepEntity::class,
         ChainDoneDayEntity::class,
+        VideoDiaryEntryEntity::class,
     ],
-    version = 4,
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -30,9 +30,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun wakeDao(): WakeDao
     abstract fun goalDao(): GoalDao
     abstract fun birthdayDao(): BirthdayDao
-    abstract fun microTaskDao(): MicroTaskDao
+
+    abstract fun reminderTemplateDao(): ReminderTemplateDao
 
     abstract fun chainAlarmDao(): ChainAlarmDao
+
+    abstract fun videoDiaryDao(): VideoDiaryDao
 
     companion object {
         private val MIGRATION_1_2 =
@@ -89,9 +92,57 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
+        private val MIGRATION_4_5 =
+            object : Migration(4, 5) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "ALTER TABLE birthdays ADD COLUMN isLunar INTEGER NOT NULL DEFAULT 0",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `reminder_templates` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`text` TEXT NOT NULL)",
+                    )
+                }
+            }
+
+        private val MIGRATION_5_6 =
+            object : Migration(5, 6) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("DROP TABLE IF EXISTS `micro_task_days`")
+                    db.execSQL("DROP TABLE IF EXISTS `micro_task_custom`")
+                }
+            }
+
+        private val MIGRATION_6_7 =
+            object : Migration(6, 7) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `video_diary_entries` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`dayEpoch` INTEGER NOT NULL, " +
+                            "`relativePath` TEXT NOT NULL, " +
+                            "`displayName` TEXT NOT NULL, " +
+                            "`sizeBytes` INTEGER NOT NULL, " +
+                            "`addedAtMillis` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_video_diary_entries_dayEpoch` " +
+                            "ON `video_diary_entries` (`dayEpoch`)",
+                    )
+                }
+            }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "morning_bell.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                )
                 .fallbackToDestructiveMigration()
                 .build()
     }

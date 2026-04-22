@@ -50,12 +50,6 @@ private sealed interface Page {
         val payload: AppRepository.StickyPayload,
     ) : Page
 
-    /** 今日小任务：文案 + 完成后的反馈句（仅内存展示） */
-    data class MicroTask(
-        val slot: AppRepository.MicroTaskFlowSlot,
-        val praiseLine: String?,
-    ) : Page
-
     data object Mood : Page
 }
 
@@ -81,20 +75,11 @@ fun DismissFlowRoute(
         return
     }
 
-    var microSlot by remember(alarmId) { mutableStateOf<AppRepository.MicroTaskFlowSlot?>(null) }
-    var microPraise by remember(alarmId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(m, alarmId) {
-        microSlot = m.microTask
-        microPraise = null
-    }
-    val micro = microSlot ?: m.microTask
-
     val pages =
-        remember(m.birthdayCards, m.sticky, micro, microPraise) {
+        remember(m.birthdayCards, m.sticky) {
             buildList {
                 m.birthdayCards.forEach { add(Page.Birthday(it)) }
                 add(Page.Sticky(m.sticky))
-                add(Page.MicroTask(micro, microPraise))
                 add(Page.Mood)
             }
         }
@@ -144,30 +129,6 @@ fun DismissFlowRoute(
                         )
                     }
 
-                is Page.MicroTask ->
-                    AnimatedVisibility(
-                        visible = true,
-                        enter = fadeIn() + slideInVertically { it / 4 },
-                    ) {
-                        MorningMicroTaskCard(
-                            slot = page.slot,
-                            praiseLine = page.praiseLine,
-                            onComplete = {
-                                scope.launch {
-                                    val r = repo.completeTodayMicroTask()
-                                    microSlot = r.slot
-                                    microPraise = r.praise
-                                }
-                            },
-                            onSwap = {
-                                scope.launch {
-                                    microSlot = repo.swapTodayMicroTask()
-                                    microPraise = null
-                                }
-                            },
-                        )
-                    }
-
                 is Page.Mood ->
                     MoodPickCard(
                         onPick = { score ->
@@ -184,65 +145,6 @@ fun DismissFlowRoute(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.outline,
         )
-    }
-}
-
-@Composable
-private fun MorningMicroTaskCard(
-    slot: AppRepository.MicroTaskFlowSlot,
-    praiseLine: String?,
-    onComplete: () -> Unit,
-    onSwap: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-        colors =
-            CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-            ),
-    ) {
-        Column(
-            Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                stringResource(R.string.micro_task_card_title),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                slot.taskText,
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-            )
-            if (slot.completed) {
-                Text(
-                    praiseLine ?: stringResource(R.string.micro_task_already_done_hint),
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Button(
-                        onClick = onComplete,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(stringResource(R.string.micro_task_done_one_tap))
-                    }
-                    TextButton(onClick = onSwap) {
-                        Text(stringResource(R.string.micro_task_swap))
-                    }
-                }
-                Text(
-                    stringResource(R.string.micro_task_card_hint),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f),
-                )
-            }
-        }
     }
 }
 

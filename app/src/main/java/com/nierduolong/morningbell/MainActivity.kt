@@ -19,9 +19,9 @@ import com.nierduolong.morningbell.ui.birthday.BirthdayRoute
 import com.nierduolong.morningbell.ui.dismiss.DismissFlowRoute
 import com.nierduolong.morningbell.ui.goals.GoalsRoute
 import com.nierduolong.morningbell.ui.home.HomeRoute
-import com.nierduolong.morningbell.ui.microtask.MicroTaskPoolRoute
 import com.nierduolong.morningbell.ui.mood.MoodRoute
 import com.nierduolong.morningbell.ui.settings.SettingsRoute
+import com.nierduolong.morningbell.ui.videodiary.VideoDiaryRoute
 import com.nierduolong.morningbell.ui.theme.MorningBellTheme
 import com.nierduolong.morningbell.unlock.WakeTrackStarter
 
@@ -63,18 +63,12 @@ class MainActivity : ComponentActivity() {
                             repo = app.repository,
                             onBack = { nav.popBackStack() },
                             onOpenGoals = { nav.navigate("goals") },
-                            onOpenMicroTaskPool = { nav.navigate("micro_tasks") },
                             onOpenBirthdays = { nav.navigate("birthdays") },
+                            onOpenVideoDiary = { nav.navigate("video_diary") },
                         )
                     }
                     composable("mood") {
                         MoodRoute(
-                            repo = app.repository,
-                            onBack = { nav.popBackStack() },
-                        )
-                    }
-                    composable("micro_tasks") {
-                        MicroTaskPoolRoute(
                             repo = app.repository,
                             onBack = { nav.popBackStack() },
                         )
@@ -87,6 +81,12 @@ class MainActivity : ComponentActivity() {
                     }
                     composable("birthdays") {
                         BirthdayRoute(
+                            repo = app.repository,
+                            onBack = { nav.popBackStack() },
+                        )
+                    }
+                    composable("video_diary") {
+                        VideoDiaryRoute(
                             repo = app.repository,
                             onBack = { nav.popBackStack() },
                         )

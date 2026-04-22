@@ -6,6 +6,7 @@
 package com.nierduolong.morningbell.ui.settings
 
 import android.Manifest
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -39,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -58,6 +61,8 @@ import com.nierduolong.morningbell.data.WakeSettings
 import com.nierduolong.morningbell.data.db.WakeDayEntity
 import com.nierduolong.morningbell.ui.common.RowFields
 import com.nierduolong.morningbell.ui.home.MonthlyWakeTrendCard
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -71,8 +76,8 @@ fun SettingsRoute(
     repo: AppRepository,
     onBack: () -> Unit,
     onOpenGoals: () -> Unit,
-    onOpenMicroTaskPool: () -> Unit,
     onOpenBirthdays: () -> Unit,
+    onOpenVideoDiary: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val wakes by repo.wakeFlow.collectAsState(initial = emptyList())
@@ -82,6 +87,27 @@ fun SettingsRoute(
     val todayEpoch = LocalDate.now().toEpochDay()
     val todayWake = wakes.find { it.dayEpoch == todayEpoch }
     var showWakeThresholdEditor by remember { mutableStateOf(false) }
+    // 从系统设置返回或权限弹窗结束后重算「是否仍需要权限区块」
+    var permissionStateEpoch by remember { mutableStateOf(0) }
+    val context = LocalContext.current
+    val permissionAttentionNeeded =
+        remember(permissionStateEpoch, context) {
+            permissionAttentionNeededImpl(context)
+        }
+    val bumpPermissionState: () -> Unit = {
+        permissionStateEpoch += 1
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs =
+            LifecycleEventObserver { _, e ->
+                if (e == Lifecycle.Event.ON_RESUME) {
+                    permissionStateEpoch += 1
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     Scaffold(
         topBar = {
@@ -130,11 +156,11 @@ fun SettingsRoute(
                             TextButton(onClick = onOpenGoals) {
                                 Text(stringResource(R.string.goals_title_short))
                             }
-                            TextButton(onClick = onOpenMicroTaskPool) {
-                                Text(stringResource(R.string.micro_task_title_short))
-                            }
                             TextButton(onClick = onOpenBirthdays) {
                                 Text(stringResource(R.string.birthday_nav_short))
+                            }
+                            TextButton(onClick = onOpenVideoDiary) {
+                                Text(stringResource(R.string.video_diary_nav_short))
                             }
                         }
                     }
@@ -182,21 +208,20 @@ fun SettingsRoute(
             item {
                 MonthlyWakeTrendCard(wakes = wakes)
             }
-            item {
-                Text(
-                    stringResource(R.string.settings_section_permissions),
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            item {
-                PermissionHintCard()
-            }
-            item {
-                LocationWeatherPermissionCard()
-            }
-            item {
-                BatteryOptimizationHintCard()
+            // 仅当精确闹钟 / 定位 / 电池优化 中仍有未处理项时展示（避免常驻打扰）
+            if (permissionAttentionNeeded) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            stringResource(R.string.settings_section_permissions),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        PermissionHintCard()
+                        LocationWeatherPermissionCard(onAttentionMaybeChanged = bumpPermissionState)
+                        BatteryOptimizationHintCard(onAttentionMaybeChanged = bumpPermissionState)
+                    }
+                }
             }
         }
     }
@@ -213,6 +238,24 @@ fun SettingsRoute(
             },
         )
     }
+}
+
+/** 与下方三张提示卡一致：任一项仍「需要用户处理」则为 true */
+private fun permissionAttentionNeededImpl(context: Context): Boolean {
+    val locOk =
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+    val am = context.getSystemService(AlarmManager::class.java)
+    val needsExactAlarm =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            am?.canScheduleExactAlarms() == false
+    val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val batteryOk =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+            pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+    return needsExactAlarm || !locOk || !batteryOk
 }
 
 private fun formatWakeMillis(millis: Long): String {
@@ -421,7 +464,9 @@ private fun WakeHistoryCard(wakes: List<WakeDayEntity>) {
 }
 
 @Composable
-private fun LocationWeatherPermissionCard() {
+private fun LocationWeatherPermissionCard(
+    onAttentionMaybeChanged: () -> Unit = {},
+) {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(
@@ -434,7 +479,10 @@ private fun LocationWeatherPermissionCard() {
     val launcher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.RequestPermission(),
-            onResult = { ok -> granted = ok },
+            onResult = { ok ->
+                granted = ok
+                onAttentionMaybeChanged()
+            },
         )
     if (granted) return
     Card(
@@ -464,7 +512,9 @@ private fun LocationWeatherPermissionCard() {
 }
 
 @Composable
-private fun BatteryOptimizationHintCard() {
+private fun BatteryOptimizationHintCard(
+    onAttentionMaybeChanged: () -> Unit = {},
+) {
     val context = LocalContext.current
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -508,11 +558,17 @@ private fun BatteryOptimizationHintCard() {
                                     android.widget.Toast.LENGTH_LONG,
                                 ).show()
                         }
+                        onAttentionMaybeChanged()
                     },
                 ) {
                     Text(stringResource(R.string.wake_battery_opt_action))
                 }
-                TextButton(onClick = { checkSeq++ }) {
+                TextButton(
+                    onClick = {
+                        checkSeq++
+                        onAttentionMaybeChanged()
+                    },
+                ) {
                     Text(stringResource(R.string.wake_battery_opt_refresh))
                 }
             }
@@ -523,7 +579,7 @@ private fun BatteryOptimizationHintCard() {
 @Composable
 private fun PermissionHintCard() {
     val context = LocalContext.current
-    val am = context.getSystemService(android.app.AlarmManager::class.java)
+    val am = context.getSystemService(AlarmManager::class.java)
     val needsExact =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am?.canScheduleExactAlarms() == false
     if (!needsExact) return

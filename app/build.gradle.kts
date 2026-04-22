@@ -72,6 +72,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
+    /** 农历生日 → 当年公历，用于提醒日计算 */
+    implementation("cn.6tail:lunar:1.7.4")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))

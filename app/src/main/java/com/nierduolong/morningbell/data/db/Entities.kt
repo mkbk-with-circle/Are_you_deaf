@@ -1,6 +1,7 @@
 package com.nierduolong.morningbell.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "alarms")
@@ -46,10 +47,19 @@ data class GoalEntity(
 data class BirthdayEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    /** 1–12 */
+    /** 公历：1–12 月；农历：1–12 月（闰月暂不支持，与库一致） */
     val month: Int,
-    /** 1–31 */
+    /** 公历：1–31；农历：初一–三十 */
     val day: Int,
+    /** true 时 month/day 按农历解释，提醒按当年对应公历日计算 */
+    val isLunar: Boolean = false,
+)
+
+/** 用户自建的提醒文案模版（与内置列表合并展示） */
+@Entity(tableName = "reminder_templates")
+data class ReminderTemplateEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val text: String,
 )
 
 @Entity(tableName = "birthday_reminders")
@@ -61,19 +71,19 @@ data class BirthdayReminderEntity(
     val todoText: String,
 )
 
-/** 用户自建的早晨小任务文案，与内置池合并随机 */
-@Entity(tableName = "micro_task_custom")
-data class MicroTaskCustomEntity(
+/** 每日归档视频：文件在应用目录 VideoDiary/年/月/日/ 下，此处存元数据 */
+@Entity(
+    tableName = "video_diary_entries",
+    indices = [Index(value = ["dayEpoch"])],
+)
+data class VideoDiaryEntryEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val text: String,
+    /** LocalDate.toEpochDay()，与文件夹日期一致 */
+    val dayEpoch: Long,
+    /** 相对 VideoDiary 根的路径 */
+    val relativePath: String,
+    val displayName: String,
+    val sizeBytes: Long,
+    val addedAtMillis: Long,
 )
 
-/** 当日抽中的小任务及完成状态（换一条会更新 taskText / swapCount） */
-@Entity(tableName = "micro_task_days")
-data class MicroTaskDayEntity(
-    @PrimaryKey val dayEpoch: Long,
-    val taskText: String,
-    val completed: Boolean = false,
-    val completedAtMillis: Long? = null,
-    val swapCount: Int = 0,
-)

@@ -3,7 +3,6 @@ package com.nierduolong.morningbell.core
 import com.nierduolong.morningbell.data.db.BirthdayEntity
 import com.nierduolong.morningbell.data.db.BirthdayReminderEntity
 import java.time.LocalDate
-import java.time.YearMonth
 import java.time.temporal.ChronoUnit
 
 /** 生日卡片：用于单元测试与 UI 展示分离 */
@@ -27,7 +26,7 @@ object BirthdayReminderLogic {
         for (b in birthdays) {
             val list = byBirthday[b.id].orEmpty()
             for (r in list) {
-                val eventDate = birthdayDateThisYear(b.month, b.day, today)
+                val eventDate = LunarBirthdayCalendar.solarEventDateThisYear(b, today)
                 val triggerDate = eventDate.minusDays(r.daysBefore.toLong())
                 if (!triggerDate.isEqual(today)) continue
                 val isBirthDay = r.daysBefore == 0
@@ -53,9 +52,4 @@ object BirthdayReminderLogic {
         return ChronoUnit.DAYS.between(today, end)
     }
 
-    private fun birthdayDateThisYear(month: Int, day: Int, reference: LocalDate): LocalDate {
-        val ym = YearMonth.of(reference.year, month)
-        val safeDay = day.coerceAtMost(ym.lengthOfMonth())
-        return LocalDate.of(reference.year, month, safeDay)
-    }
 }

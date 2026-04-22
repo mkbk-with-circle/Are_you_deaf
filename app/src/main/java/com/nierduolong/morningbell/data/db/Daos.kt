@@ -88,6 +88,9 @@ interface BirthdayDao {
     @Query("SELECT * FROM birthday_reminders WHERE birthdayId = :id")
     suspend fun remindersFor(id: Long): List<BirthdayReminderEntity>
 
+    @Query("SELECT * FROM birthday_reminders WHERE birthdayId = :id ORDER BY id ASC")
+    fun observeRemindersForBirthday(id: Long): Flow<List<BirthdayReminderEntity>>
+
     @Query("SELECT * FROM birthday_reminders")
     suspend fun allReminders(): List<BirthdayReminderEntity>
 
@@ -108,24 +111,30 @@ interface BirthdayDao {
 }
 
 @Dao
-interface MicroTaskDao {
-    @Query("SELECT * FROM micro_task_days WHERE dayEpoch = :dayEpoch")
-    suspend fun getDay(dayEpoch: Long): MicroTaskDayEntity?
+interface VideoDiaryDao {
+    @Query("SELECT * FROM video_diary_entries ORDER BY dayEpoch DESC, id DESC")
+    fun observeAll(): Flow<List<VideoDiaryEntryEntity>>
+
+    @Query("SELECT * FROM video_diary_entries WHERE id = :id")
+    suspend fun getById(id: Long): VideoDiaryEntryEntity?
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(e: VideoDiaryEntryEntity): Long
+
+    @Query("DELETE FROM video_diary_entries WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
+@Dao
+interface ReminderTemplateDao {
+    @Query("SELECT * FROM reminder_templates ORDER BY id DESC")
+    fun observeTemplates(): Flow<List<ReminderTemplateEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertDay(row: MicroTaskDayEntity)
+    suspend fun insert(t: ReminderTemplateEntity): Long
 
-    @Query("SELECT * FROM micro_task_custom ORDER BY id DESC")
-    fun observeCustom(): Flow<List<MicroTaskCustomEntity>>
-
-    @Query("SELECT * FROM micro_task_custom ORDER BY id DESC")
-    suspend fun allCustom(): List<MicroTaskCustomEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertCustom(row: MicroTaskCustomEntity): Long
-
-    @Query("DELETE FROM micro_task_custom WHERE id = :id")
-    suspend fun deleteCustom(id: Long)
+    @Query("DELETE FROM reminder_templates WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao
