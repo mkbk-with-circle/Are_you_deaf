@@ -86,7 +86,7 @@ fun BirthdayRoute(
         ) {
             item {
                 Text(
-                    "点某一行展开，查看并管理该人的提醒。关闭闹钟后的卡片流里会在触发日显示对应任务。",
+                    "点某一行展开管理提醒。触发日起每日 0:00 闹钟（错过则进程恢复后自动顺延到下一次 0:00，直至生日当日结束或你在响铃页点「本周期已处理」）。",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))

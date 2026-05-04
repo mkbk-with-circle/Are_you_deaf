@@ -102,9 +102,9 @@
     <string name="wake_track_channel_name">早起统计</string>
     <string name="wake_track_channel_desc">保持运行以监听首次解锁并写入起床时间</string>
     <string name="wake_track_notif_title">早起统计运行中</string>
-    <string name="wake_track_notif_text">正在监听解锁；通知可最小化，请勿强制停止本应用。</string>
-    <string name="wake_track_notif_big">应用会以低打扰前台服务常驻，在「统计起始时间」之后记录当天第一次解锁屏幕的时间。若长期无记录，请在系统设置中开启自启动、关闭电池优化，并保留本通知（部分机型会杀后台）。</string>
-    <string name="wake_battery_opt_hint">关掉电池优化，起床记录更稳。</string>
+    <string name="wake_track_notif_text">正在监听首次解锁。勿删本通知/勿强制停止；省电或厂商后台限制仍可能停进程。</string>
+    <string name="wake_track_notif_big">应用以默认档前台通知常驻，在「统计起始时间」之后记录当天第一次解锁。夜间省电/睡眠下系统仍可能收掉进程。若常丢记录：1）关闭对本应用的「电池限制」2）在厂商设置中允许「自启动/后台活动」3）不要从「应用信息」点强制停止 4）设置中授予「精确闹钟」以便在死后尽量按时自恢复 5）勿下滑移除本通知（部分系统会随通知停 FGS）。</string>
+    <string name="wake_battery_opt_hint">先关掉电池限制；小米/OPPO/华为等还须在「自启动/后台高耗电」中放行本应用，否则深睡后仍易被杀。</string>
     <string name="wake_battery_opt_action">申请忽略电池优化</string>
     <string name="wake_battery_opt_refresh">重新检测</string>
     <string name="wake_battery_opt_open_failed">无法打开设置，请手动在「应用信息 → 电池」中关闭优化。</string>

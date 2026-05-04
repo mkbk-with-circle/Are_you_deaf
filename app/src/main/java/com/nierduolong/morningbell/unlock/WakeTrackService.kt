@@ -54,10 +54,14 @@ class WakeTrackService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
+        // 已成功拉起则取消「死后短延迟自恢复」，避免与当前实例重复
+        WakeTrackKeepAliveAlarms.cancelRestartAlarm(this)
         promoteToForeground()
         if (!receiverRegistered) {
             registerUnlock()
         }
+        // 长间隔链式排程：深睡/省电后仍有机会在闹钟触发时补拉起 FGS
+        WakeTrackKeepAliveAlarms.schedulePeriodicRecheck(applicationContext)
         return START_STICKY
     }
 
@@ -78,7 +82,8 @@ class WakeTrackService : Service() {
                     NotificationCompat.BigTextStyle()
                         .bigText(getString(R.string.wake_track_notif_big)),
                 )
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                // 低优先级部分机型更易杀进程；用默认档提高可见性
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
                 .setOngoing(true)
                 .setContentIntent(openApp)
@@ -109,6 +114,8 @@ class WakeTrackService : Service() {
     }
 
     override fun onDestroy() {
+        // 从最近任务划掉/系统回收时，尽量短延迟再试拉起（若 onDestroy 未被调用则依赖定时抽查）
+        WakeTrackKeepAliveAlarms.scheduleRestartAfterStop(applicationContext)
         if (receiverRegistered) {
             try {
                 unregisterReceiver(unlockReceiver)
@@ -127,7 +134,8 @@ class WakeTrackService : Service() {
             NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.wake_track_channel_name),
-                NotificationManager.IMPORTANCE_LOW,
+                // 低重要级通知在部分厂商省电策略下优先被收掉，改为 DEFAULT
+                NotificationManager.IMPORTANCE_DEFAULT,
             ).apply {
                 description = getString(R.string.wake_track_channel_desc)
                 setShowBadge(false)
@@ -136,7 +144,8 @@ class WakeTrackService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "wake_track_fg"
+        /** 新 id：旧低重要级 channel 已创建时无法强改，换 id 以应用更高优先级 */
+        private const val CHANNEL_ID = "wake_track_fg_v2"
         private const val NOTIFICATION_ID = 71012
     }
 }

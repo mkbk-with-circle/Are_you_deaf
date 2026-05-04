@@ -85,6 +85,12 @@ interface BirthdayDao {
     @Query("SELECT * FROM birthdays ORDER BY month, day")
     suspend fun allBirthdays(): List<BirthdayEntity>
 
+    @Query("SELECT * FROM birthdays WHERE id = :id")
+    suspend fun getBirthdayById(id: Long): BirthdayEntity?
+
+    @Query("SELECT * FROM birthday_reminders WHERE id = :id")
+    suspend fun getReminderById(id: Long): BirthdayReminderEntity?
+
     @Query("SELECT * FROM birthday_reminders WHERE birthdayId = :id")
     suspend fun remindersFor(id: Long): List<BirthdayReminderEntity>
 

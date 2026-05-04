@@ -19,6 +19,7 @@ class MorningBellApp : Application() {
         repository = AppRepository(this, database)
         CoroutineScope(Dispatchers.IO).launch {
             repository.seedIfEmpty()
+            repository.rescheduleAllBirthdayReminders()
         }
         // 起床解锁监听由 WakeTrackService（前台）注册；勿在 Application 仅动态注册（进程被杀即失效）
     }

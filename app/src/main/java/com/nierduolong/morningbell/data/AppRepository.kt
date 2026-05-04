@@ -3,8 +3,10 @@ package com.nierduolong.morningbell.data
 import android.content.Context
 import android.net.Uri
 import com.nierduolong.morningbell.alarm.AlarmScheduler
+import com.nierduolong.morningbell.alarm.BirthdayAlarmScheduler
 import com.nierduolong.morningbell.core.AlarmTimeCalculator
 import com.nierduolong.morningbell.core.BirthdayReminderLogic
+import com.nierduolong.morningbell.core.LunarBirthdayCalendar
 import com.nierduolong.morningbell.core.StickyThemeRegistry
 import com.nierduolong.morningbell.data.db.AlarmEntity
 import com.nierduolong.morningbell.data.db.AppDatabase
@@ -28,6 +30,7 @@ import com.nierduolong.morningbell.weather.OpenMeteoWeather
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import kotlin.random.Random
 
 class AppRepository(
@@ -91,6 +94,91 @@ class AppRepository(
             wakes.deleteForDay(today)
         }
     }
+
+    /** 响铃通知文案 + 当前周期公历生日 epochDay（用于 ack） */
+    data class BirthdayNotifyBundle(
+        val title: String,
+        val body: String,
+        val eventEpochDay: Long,
+    )
+
+    suspend fun getBirthdayReminderNotifyBundle(reminderId: Long): BirthdayNotifyBundle? =
+        withContext(Dispatchers.IO) {
+            val r = birthdays.getReminderById(reminderId) ?: return@withContext null
+            val b = birthdays.getBirthdayById(r.birthdayId) ?: return@withContext null
+            val zone = ZoneId.systemDefault()
+            val now = ZonedDateTime.now(zone)
+            val eventDate =
+                BirthdayReminderLogic.activeCycleEventDate(b, r, zone, now)
+                    ?: LunarBirthdayCalendar.solarEventDateThisYear(b, LocalDate.now())
+            val body =
+                buildString {
+                    if (r.daysBefore == 0) {
+                        append("今天生日：")
+                    } else {
+                        append("提前 ${r.daysBefore} 天：")
+                    }
+                    append(r.todoText)
+                }
+            BirthdayNotifyBundle(
+                title = "「${b.name}」生日提醒",
+                body = body,
+                eventEpochDay = eventDate.toEpochDay(),
+            )
+        }
+
+    /** 用户标记本周期已处理：写入 ack 并重排闹钟 */
+    suspend fun ackBirthdayReminderForEventCycle(
+        reminderId: Long,
+        eventEpochDay: Long,
+    ) = withContext(Dispatchers.IO) {
+        val r = birthdays.getReminderById(reminderId) ?: return@withContext
+        birthdays.upsertReminder(r.copy(lastAcknowledgedEventEpochDay = eventEpochDay))
+        rescheduleAllBirthdayReminders()
+    }
+
+    /** 所有生日条目重排下一次 0 点（数据变更、换日、开机后调用） */
+    suspend fun rescheduleAllBirthdayReminders() =
+        withContext(Dispatchers.IO) {
+            val zone = ZoneId.systemDefault()
+            val now = ZonedDateTime.now(zone)
+            val bMap = birthdays.allBirthdays().associateBy { it.id }
+            for (r in birthdays.allReminders()) {
+                BirthdayAlarmScheduler.cancel(context, r.id)
+                val birth = bMap[r.birthdayId] ?: continue
+                val next =
+                    BirthdayReminderLogic.nextBirthdayAlarmScheduleMillis(
+                        birth,
+                        r,
+                        zone,
+                        now,
+                    ) ?: continue
+                BirthdayAlarmScheduler.schedule(context, r.id, next, snoozeOneShot = false)
+            }
+        }
+
+    /** 一次响铃结束后，预约下一年（或下一次）同一触发日 0 点 */
+    suspend fun scheduleFollowingBirthdayReminder(reminderId: Long) =
+        withContext(Dispatchers.IO) {
+            val r = birthdays.getReminderById(reminderId) ?: return@withContext
+            val b = birthdays.getBirthdayById(r.birthdayId) ?: return@withContext
+            BirthdayAlarmScheduler.cancel(context, reminderId)
+            val zone = ZoneId.systemDefault()
+            val next =
+                BirthdayReminderLogic.nextBirthdayAlarmScheduleMillis(
+                    b,
+                    r,
+                    zone,
+                    ZonedDateTime.now(zone),
+                ) ?: return@withContext
+            BirthdayAlarmScheduler.schedule(context, reminderId, next, snoozeOneShot = false)
+        }
+
+    suspend fun scheduleBirthdayReminderSnooze(reminderId: Long) =
+        withContext(Dispatchers.IO) {
+            val at = AlarmTimeCalculator.snoozeEpochMillis(5)
+            BirthdayAlarmScheduler.schedule(context, reminderId, at, snoozeOneShot = true)
+        }
 
     suspend fun getAlarm(id: Long): AlarmEntity? =
         withContext(Dispatchers.IO) { alarms.getById(id) }
@@ -334,6 +422,7 @@ class AppRepository(
             chainAlarms.enabledGroups().forEach { g ->
                 scheduleAllChainSteps(g.id)
             }
+            rescheduleAllBirthdayReminders()
         }
 
     /** 系统触发响铃（非贪睡）后，预排下一次合法触发点 */
@@ -382,14 +471,45 @@ class AppRepository(
         }
 
     suspend fun upsertBirthday(b: BirthdayEntity): Long =
-        withContext(Dispatchers.IO) { birthdays.upsertBirthday(b) }
+        withContext(Dispatchers.IO) {
+            val prev = if (b.id != 0L) birthdays.getBirthdayById(b.id) else null
+            val id = birthdays.upsertBirthday(b)
+            // 公历/农历或月日变更后，本年 ack 不再可信，清空以免影响新一轮提醒
+            if (prev != null &&
+                (prev.month != b.month || prev.day != b.day || prev.isLunar != b.isLunar)
+            ) {
+                birthdays.remindersFor(id).forEach { r ->
+                    birthdays.upsertReminder(r.copy(lastAcknowledgedEventEpochDay = null))
+                }
+            }
+            rescheduleAllBirthdayReminders()
+            id
+        }
 
     /** 某人生日下的提醒列表（随增删实时刷新） */
     fun remindersForBirthdayFlow(birthdayId: Long): Flow<List<BirthdayReminderEntity>> =
         birthdays.observeRemindersForBirthday(birthdayId)
 
     suspend fun upsertReminder(r: BirthdayReminderEntity): Long =
-        withContext(Dispatchers.IO) { birthdays.upsertReminder(r) }
+        withContext(Dispatchers.IO) {
+            val merged =
+                if (r.id != 0L) {
+                    val previous = birthdays.getReminderById(r.id)
+                    if (previous != null &&
+                        previous.daysBefore == r.daysBefore &&
+                        previous.todoText == r.todoText
+                    ) {
+                        r.copy(lastAcknowledgedEventEpochDay = previous.lastAcknowledgedEventEpochDay)
+                    } else {
+                        r.copy(lastAcknowledgedEventEpochDay = null)
+                    }
+                } else {
+                    r
+                }
+            val id = birthdays.upsertReminder(merged)
+            rescheduleAllBirthdayReminders()
+            id
+        }
 
     suspend fun insertReminderTemplate(text: String) =
         withContext(Dispatchers.IO) {
@@ -406,12 +526,14 @@ class AppRepository(
 
     suspend fun deleteBirthday(id: Long) =
         withContext(Dispatchers.IO) {
+            birthdays.remindersFor(id).forEach { BirthdayAlarmScheduler.cancel(context, it.id) }
             birthdays.deleteRemindersForBirthday(id)
             birthdays.deleteBirthday(id)
         }
 
     suspend fun deleteReminder(id: Long) =
         withContext(Dispatchers.IO) {
+            BirthdayAlarmScheduler.cancel(context, id)
             birthdays.deleteReminder(id)
         }
 
@@ -444,22 +566,14 @@ class AppRepository(
     suspend fun loadReminders(birthdayId: Long): List<BirthdayReminderEntity> =
         withContext(Dispatchers.IO) { birthdays.remindersFor(birthdayId) }
 
-    /** 组装关闭闹钟后的卡片内容 */
+    /** 组装关闭闹钟后的卡片内容（生日提醒已改为独立 0 点闹钟，此处不再插生日卡片） */
     suspend fun buildDismissFlowCards(): DismissFlowModel =
         withContext(Dispatchers.IO) {
             val today = LocalDate.now()
-            val bList = birthdays.allBirthdays()
-            val rList = birthdays.allReminders()
-            val due =
-                BirthdayReminderLogic.collectDueCards(
-                    today = today,
-                    birthdays = bList,
-                    reminders = rList,
-                )
             val gs = goals.activeGoals()
             val sticky = buildSticky(gs, today)
             DismissFlowModel(
-                birthdayCards = due,
+                birthdayCards = emptyList(),
                 sticky = sticky,
             )
         }

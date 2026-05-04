@@ -18,7 +18,7 @@ import android.os.Vibrator
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.nierduolong.morningbell.MainActivity
+import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.MorningBellApp
 import com.nierduolong.morningbell.R
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +43,15 @@ class AlarmRingService : Service() {
         ensureChannel()
         val alarmId = intent?.getLongExtra(EXTRA_ALARM_ID, -1L) ?: return START_NOT_STICKY
         val isChainStep = intent.getBooleanExtra(EXTRA_IS_CHAIN_STEP, false)
+        val isBirthdayReminder = intent.getBooleanExtra(EXTRA_IS_BIRTHDAY_REMINDER, false)
+        val contentTitle =
+            intent.getStringExtra(EXTRA_CONTENT_TITLE)?.takeIf { it.isNotBlank() }
+                ?: getString(R.string.app_name)
+        val contentText =
+            intent.getStringExtra(EXTRA_CONTENT_TEXT)?.takeIf { it.isNotBlank() }
+                ?: getString(R.string.alarm_channel_desc)
+        val eventEpochDayForAck =
+            intent.getLongExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, Long.MIN_VALUE)
         val tap =
             PendingIntent.getActivity(
                 this,
@@ -50,6 +59,12 @@ class AlarmRingService : Service() {
                 Intent(this, AlarmRingActivity::class.java).apply {
                     putExtra(AlarmRingActivity.EXTRA_ALARM_ID, alarmId)
                     putExtra(AlarmRingActivity.EXTRA_IS_CHAIN_STEP, isChainStep)
+                    putExtra(AlarmRingActivity.EXTRA_IS_BIRTHDAY_REMINDER, isBirthdayReminder)
+                    putExtra(AlarmRingActivity.EXTRA_RING_TITLE, contentTitle)
+                    putExtra(AlarmRingActivity.EXTRA_RING_SUBTITLE, contentText)
+                    if (eventEpochDayForAck != Long.MIN_VALUE) {
+                        putExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, eventEpochDayForAck)
+                    }
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -57,8 +72,8 @@ class AlarmRingService : Service() {
         val notification =
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(getString(R.string.app_name))
-                .setContentText(getString(R.string.alarm_channel_desc))
+                .setContentTitle(contentTitle)
+                .setContentText(contentText)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setContentIntent(tap)
@@ -76,7 +91,16 @@ class AlarmRingService : Service() {
         prepJob =
             scope.launch(Dispatchers.IO) {
                 val app = applicationContext as MorningBellApp
-                val profile = app.repository.getAlarmRingProfile(alarmId, isChainStep)
+                val profile =
+                    if (isBirthdayReminder) {
+                        AppRepository.AlarmRingProfile(
+                            silent = false,
+                            vibrate = true,
+                            soundUri = null,
+                        )
+                    } else {
+                        app.repository.getAlarmRingProfile(alarmId, isChainStep)
+                    }
                 startRinging(profile)
             }
         return START_STICKY
@@ -185,6 +209,9 @@ class AlarmRingService : Service() {
     companion object {
         const val EXTRA_ALARM_ID = "extra_alarm_id"
         const val EXTRA_IS_CHAIN_STEP = "extra_is_chain_step"
+        const val EXTRA_IS_BIRTHDAY_REMINDER = "extra_is_birthday_reminder"
+        const val EXTRA_CONTENT_TITLE = "extra_content_title"
+        const val EXTRA_CONTENT_TEXT = "extra_content_text"
         private const val CHANNEL_ID = "alarm_ring_fg"
         private const val NOTIFICATION_ID = 71011
 
@@ -192,11 +219,21 @@ class AlarmRingService : Service() {
             context: Context,
             alarmId: Long,
             isChainStep: Boolean,
+            isBirthdayReminder: Boolean = false,
+            contentTitle: String? = null,
+            contentText: String? = null,
+            eventEpochDayForAck: Long? = null,
         ) {
             val i =
                 Intent(context, AlarmRingService::class.java).apply {
                     putExtra(EXTRA_ALARM_ID, alarmId)
                     putExtra(EXTRA_IS_CHAIN_STEP, isChainStep)
+                    putExtra(EXTRA_IS_BIRTHDAY_REMINDER, isBirthdayReminder)
+                    if (contentTitle != null) putExtra(EXTRA_CONTENT_TITLE, contentTitle)
+                    if (contentText != null) putExtra(EXTRA_CONTENT_TEXT, contentText)
+                    if (eventEpochDayForAck != null) {
+                        putExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, eventEpochDayForAck)
+                    }
                 }
             ContextCompat.startForegroundService(context, i)
         }

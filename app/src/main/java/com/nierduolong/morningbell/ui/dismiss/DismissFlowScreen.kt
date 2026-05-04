@@ -92,7 +92,7 @@ fun DismissFlowRoute(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            "闹钟已关闭 · 上下滑动浏览卡片（共 ${pages.size} 张）",
+            "闹钟已关闭 · 上下滑动浏览（共 ${pages.size} 张）",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onBackground,
         )

@@ -18,6 +18,7 @@ class AlarmReceiver : BroadcastReceiver() {
         if (intent?.action != ACTION_FIRE) return
         val alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
         if (alarmId < 0) return
+        val isBirthdayReminder = intent.getBooleanExtra(EXTRA_IS_BIRTHDAY_REMINDER, false)
         val isChainStep = intent.getBooleanExtra(EXTRA_IS_CHAIN_STEP, false)
         val snoozeOneShot = intent.getBooleanExtra(EXTRA_SNOOZE_ONE_SHOT, false)
         WakeTrackStarter.ensureRunning(context)
@@ -26,6 +27,33 @@ class AlarmReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                if (isBirthdayReminder) {
+                    val bundle = app.repository.getBirthdayReminderNotifyBundle(alarmId) ?: return@launch
+                    withContext(Dispatchers.Main) {
+                        AlarmRingService.start(
+                            context,
+                            alarmId,
+                            isChainStep = false,
+                            isBirthdayReminder = true,
+                            contentTitle = bundle.title,
+                            contentText = bundle.body,
+                            eventEpochDayForAck = bundle.eventEpochDay,
+                        )
+                        AlarmRingActivity.start(
+                            context,
+                            alarmId,
+                            isChainStep = false,
+                            isBirthdayReminder = true,
+                            ringTitle = bundle.title,
+                            ringSubtitle = bundle.body,
+                            eventEpochDayForAck = bundle.eventEpochDay,
+                        )
+                    }
+                    if (!snoozeOneShot) {
+                        app.repository.scheduleFollowingBirthdayReminder(alarmId)
+                    }
+                    return@launch
+                }
                 if (isChainStep && app.repository.shouldSkipChainStepRing(alarmId)) {
                     app.repository.scheduleFollowingChainStep(alarmId)
                     return@launch
@@ -52,5 +80,8 @@ class AlarmReceiver : BroadcastReceiver() {
         const val EXTRA_ALARM_ID = "extra_alarm_id"
         const val EXTRA_SNOOZE_ONE_SHOT = "extra_snooze_one_shot"
         const val EXTRA_IS_CHAIN_STEP = "extra_is_chain_step"
+        const val EXTRA_IS_BIRTHDAY_REMINDER = "extra_is_birthday_reminder"
+        /** 与 [AppRepository.BirthdayNotifyBundle.eventEpochDay] 一致，用于 ack 本周期 */
+        const val EXTRA_BIRTHDAY_EVENT_EPOCH_DAY = "extra_birthday_event_epoch_day"
     }
 }

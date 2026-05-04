@@ -50,6 +50,10 @@ class AlarmRingActivity : ComponentActivity() {
         }
         val alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
         val isChainStep = intent.getBooleanExtra(EXTRA_IS_CHAIN_STEP, false)
+        val isBirthdayReminder = intent.getBooleanExtra(EXTRA_IS_BIRTHDAY_REMINDER, false)
+        val ringTitle = intent.getStringExtra(EXTRA_RING_TITLE)
+        val ringSubtitle = intent.getStringExtra(EXTRA_RING_SUBTITLE)
+        val eventEpochForAck = intent.getLongExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, Long.MIN_VALUE)
         val app = application as MorningBellApp
         setContent {
             MorningBellTheme {
@@ -65,22 +69,60 @@ class AlarmRingActivity : ComponentActivity() {
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text(
-                            text = stringResource(R.string.alarm_ring_title),
+                            text =
+                                when {
+                                    isBirthdayReminder && !ringTitle.isNullOrBlank() -> ringTitle
+                                    else -> stringResource(R.string.alarm_ring_title)
+                                },
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onBackground,
                         )
+                        if (isBirthdayReminder && !ringSubtitle.isNullOrBlank()) {
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = ringSubtitle,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onBackground,
+                            )
+                        }
                         Spacer(Modifier.height(24.dp))
                         Button(
                             onClick = {
                                 scope.launch {
                                     stopRinging()
-                                    app.repository.scheduleSnoozeFiveMinutes(alarmId, isChainStep)
+                                    if (isBirthdayReminder) {
+                                        app.repository.scheduleBirthdayReminderSnooze(alarmId)
+                                    } else {
+                                        app.repository.scheduleSnoozeFiveMinutes(alarmId, isChainStep)
+                                    }
                                     finish()
                                 }
                             },
                             modifier = Modifier.padding(8.dp),
                         ) {
                             Text(stringResource(R.string.alarm_ring_snooze))
+                        }
+                        if (isBirthdayReminder && eventEpochForAck != Long.MIN_VALUE) {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        stopRinging()
+                                        app.repository.ackBirthdayReminderForEventCycle(
+                                            alarmId,
+                                            eventEpochForAck,
+                                        )
+                                        finish()
+                                    }
+                                },
+                                modifier = Modifier.padding(8.dp),
+                                colors =
+                                    ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    ),
+                            ) {
+                                Text("本周期已处理")
+                            }
                         }
                         if (isChainStep) {
                             Button(
@@ -105,7 +147,14 @@ class AlarmRingActivity : ComponentActivity() {
                             onClick = {
                                 scope.launch {
                                     stopRinging()
-                                    MainActivity.openDismissFlow(this@AlarmRingActivity, alarmId)
+                                    if (isBirthdayReminder && eventEpochForAck != Long.MIN_VALUE) {
+                                        app.repository.ackBirthdayReminderForEventCycle(
+                                            alarmId,
+                                            eventEpochForAck,
+                                        )
+                                    }
+                                    val flowAlarmId = if (isBirthdayReminder) -1L else alarmId
+                                    MainActivity.openDismissFlow(this@AlarmRingActivity, flowAlarmId)
                                     finish()
                                 }
                             },
@@ -130,17 +179,30 @@ class AlarmRingActivity : ComponentActivity() {
     companion object {
         const val EXTRA_ALARM_ID = "extra_alarm_id_ring"
         const val EXTRA_IS_CHAIN_STEP = "extra_is_chain_step"
+        const val EXTRA_IS_BIRTHDAY_REMINDER = "extra_is_birthday_reminder"
+        const val EXTRA_RING_TITLE = "extra_ring_title"
+        const val EXTRA_RING_SUBTITLE = "extra_ring_subtitle"
 
         fun start(
             context: Context,
             alarmId: Long,
             isChainStep: Boolean,
+            isBirthdayReminder: Boolean = false,
+            ringTitle: String? = null,
+            ringSubtitle: String? = null,
+            eventEpochDayForAck: Long? = null,
         ) {
             val i =
                 Intent(context, AlarmRingActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                     putExtra(EXTRA_ALARM_ID, alarmId)
                     putExtra(EXTRA_IS_CHAIN_STEP, isChainStep)
+                    putExtra(EXTRA_IS_BIRTHDAY_REMINDER, isBirthdayReminder)
+                    if (ringTitle != null) putExtra(EXTRA_RING_TITLE, ringTitle)
+                    if (ringSubtitle != null) putExtra(EXTRA_RING_SUBTITLE, ringSubtitle)
+                    if (eventEpochDayForAck != null) {
+                        putExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, eventEpochDayForAck)
+                    }
                 }
             context.startActivity(i)
         }

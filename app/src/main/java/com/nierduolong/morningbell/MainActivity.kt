@@ -24,6 +24,9 @@ import com.nierduolong.morningbell.ui.settings.SettingsRoute
 import com.nierduolong.morningbell.ui.videodiary.VideoDiaryRoute
 import com.nierduolong.morningbell.ui.theme.MorningBellTheme
 import com.nierduolong.morningbell.unlock.WakeTrackStarter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val notifyPermission =
@@ -41,12 +44,13 @@ class MainActivity : ComponentActivity() {
                 val nav = rememberNavController()
                 val activity = LocalContext.current as MainActivity
 
-                LaunchedEffect(activity.intent?.extras?.getLong(EXTRA_OPEN_FLOW)) {
-                    val id = activity.intent.getLongExtra(EXTRA_OPEN_FLOW, -1L)
-                    if (id >= 0L) {
+                LaunchedEffect(activity.intent) {
+                    if (activity.intent.hasExtra(EXTRA_OPEN_FLOW)) {
+                        val id = activity.intent.getLongExtra(EXTRA_OPEN_FLOW, -1L)
                         nav.navigate("dismiss_flow/$id") {
                             launchSingleTop = true
                         }
+                        activity.intent.removeExtra(EXTRA_OPEN_FLOW)
                     }
                 }
 
@@ -116,6 +120,10 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         // 用户可见时拉起前台服务，满足 Android 12+ 从「前台」启动 FGS 的限制
         WakeTrackStarter.ensureRunning(this)
+        val app = application as MorningBellApp
+        CoroutineScope(Dispatchers.IO).launch {
+            app.repository.rescheduleAllBirthdayReminders()
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

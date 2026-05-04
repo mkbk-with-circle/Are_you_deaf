@@ -59,7 +59,8 @@
         <service
             android:name=".unlock.WakeTrackService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <receiver
             android:name=".alarm.AlarmReceiver"
@@ -72,6 +73,10 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".unlock.WakeTrackAlarmReceiver"
+            android:exported="false" />
 
     </application>
 </manifest>

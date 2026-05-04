@@ -69,6 +69,11 @@ data class BirthdayReminderEntity(
     /** 提前几天（0 表示生日当天早上） */
     val daysBefore: Int,
     val todoText: String,
+    /**
+     * 用户已手动结束的上一次周期：对应「当年公历生日日期」的 epochDay。
+     * 与当年 event 一致时表示本周期已处理，直到下一年再响。
+     */
+    val lastAcknowledgedEventEpochDay: Long? = null,
 )
 
 /** 每日归档视频：文件在应用目录 VideoDiary/年/月/日/ 下，此处存元数据 */
