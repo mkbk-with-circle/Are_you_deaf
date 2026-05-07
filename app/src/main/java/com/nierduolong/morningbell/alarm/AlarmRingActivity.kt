@@ -1,5 +1,6 @@
 package com.nierduolong.morningbell.alarm
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -48,6 +49,9 @@ class AlarmRingActivity : ComponentActivity() {
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             )
         }
+        // 尽量顶起锁屏并点亮，便于直接在本页关闹钟
+        @Suppress("DEPRECATION")
+        window.addFlags(WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD)
         val alarmId = intent.getLongExtra(EXTRA_ALARM_ID, -1L)
         val isChainStep = intent.getBooleanExtra(EXTRA_IS_CHAIN_STEP, false)
         val isBirthdayReminder = intent.getBooleanExtra(EXTRA_IS_BIRTHDAY_REMINDER, false)
@@ -68,16 +72,18 @@ class AlarmRingActivity : ComponentActivity() {
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        val displayTitle =
+                            if (!ringTitle.isNullOrBlank()) {
+                                ringTitle
+                            } else {
+                                stringResource(R.string.alarm_ring_title)
+                            }
                         Text(
-                            text =
-                                when {
-                                    isBirthdayReminder && !ringTitle.isNullOrBlank() -> ringTitle
-                                    else -> stringResource(R.string.alarm_ring_title)
-                                },
+                            text = displayTitle,
                             style = MaterialTheme.typography.headlineMedium,
                             color = MaterialTheme.colorScheme.onBackground,
                         )
-                        if (isBirthdayReminder && !ringSubtitle.isNullOrBlank()) {
+                        if (!ringSubtitle.isNullOrBlank()) {
                             Spacer(Modifier.height(12.dp))
                             Text(
                                 text = ringSubtitle,
@@ -172,6 +178,23 @@ class AlarmRingActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+            km.requestDismissKeyguard(
+                this,
+                object : KeyguardManager.KeyguardDismissCallback() {
+                    override fun onDismissError() {}
+
+                    override fun onDismissSucceeded() {}
+
+                    override fun onDismissCancelled() {}
+                },
+            )
+        }
+    }
+
     private fun stopRinging() {
         stopService(Intent(this, AlarmRingService::class.java))
     }
@@ -194,7 +217,11 @@ class AlarmRingActivity : ComponentActivity() {
         ) {
             val i =
                 Intent(context, AlarmRingActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+                    )
                     putExtra(EXTRA_ALARM_ID, alarmId)
                     putExtra(EXTRA_IS_CHAIN_STEP, isChainStep)
                     putExtra(EXTRA_IS_BIRTHDAY_REMINDER, isBirthdayReminder)

@@ -136,7 +136,7 @@ fun ChainAlarmEditorDialog(
                 OutlinedTextField(
                     value = note,
                     onValueChange = { note = it },
-                    label = { Text("备注") },
+                    label = { Text("整组备注（响铃时显示）") },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text("重复（周日→周六）", style = MaterialTheme.typography.labelMedium)

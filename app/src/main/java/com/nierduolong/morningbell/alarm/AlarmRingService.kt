@@ -65,7 +65,11 @@ class AlarmRingService : Service() {
                     if (eventEpochDayForAck != Long.MIN_VALUE) {
                         putExtra(AlarmReceiver.EXTRA_BIRTHDAY_EVENT_EPOCH_DAY, eventEpochDayForAck)
                     }
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_REORDER_TO_FRONT,
+                    )
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
@@ -76,7 +80,9 @@ class AlarmRingService : Service() {
                 .setContentText(contentText)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setContentIntent(tap)
+                .setFullScreenIntent(tap, true)
                 .setOngoing(true)
                 .build()
         val type =

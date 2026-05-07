@@ -47,6 +47,10 @@
     <string name="alarm_delete_confirm">删除</string>
     <string name="alarm_delete_cancel">取消</string>
     <string name="alarm_ring_title">闹钟</string>
+    <string name="alarm_ring_single_title_fmt">闹钟 %1$02d:%2$02d</string>
+    <string name="alarm_ring_chain_title_fmt">连锁闹钟 · 第 %1$d 步</string>
+    <string name="alarm_ring_no_note_hint">未填写备注。可延后，或关闭并进入卡片流。</string>
+    <string name="alarm_ring_chain_no_group_note_fmt">本步 %1$02d:%2$02d · 整组备注为空，可在编辑连锁里填写。</string>
     <string name="alarm_ring_snooze">延后 5 分钟</string>
     <string name="alarm_ring_dismiss_flow">关闭并进入卡片流</string>
     <string name="alarm_ring_chain_done">完成（今日后续不响）</string>

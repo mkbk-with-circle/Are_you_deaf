@@ -58,9 +58,24 @@ class AlarmReceiver : BroadcastReceiver() {
                     app.repository.scheduleFollowingChainStep(alarmId)
                     return@launch
                 }
+                val ui = app.repository.getAlarmRingUiLines(alarmId, isChainStep) ?: return@launch
                 withContext(Dispatchers.Main) {
-                    AlarmRingService.start(context, alarmId, isChainStep)
-                    AlarmRingActivity.start(context, alarmId, isChainStep)
+                    AlarmRingService.start(
+                        context,
+                        alarmId,
+                        isChainStep,
+                        isBirthdayReminder = false,
+                        contentTitle = ui.title,
+                        contentText = ui.subtitle,
+                    )
+                    AlarmRingActivity.start(
+                        context,
+                        alarmId,
+                        isChainStep,
+                        isBirthdayReminder = false,
+                        ringTitle = ui.title,
+                        ringSubtitle = ui.subtitle,
+                    )
                 }
                 if (!snoozeOneShot) {
                     if (isChainStep) {

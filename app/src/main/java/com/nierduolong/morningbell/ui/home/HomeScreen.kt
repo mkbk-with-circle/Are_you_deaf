@@ -22,7 +22,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -526,7 +529,13 @@ private fun AlarmEditorDialog(
         },
         title = { Text(if (initial == null) "新建闹钟" else "编辑闹钟") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                modifier =
+                    Modifier
+                        .heightIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 val hourErr =
                     hourText.isNotEmpty() && !isClockHourInputValid(hourText)
                 val minuteErr =
@@ -610,6 +619,13 @@ private fun AlarmEditorDialog(
                     Text("无声闹钟")
                     Switch(checked = silent, onCheckedChange = { silent = it })
                 }
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("备注（响铃时显示）") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                )
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         AudioPickerUtils.ringtoneSummary(context, soundUri, defaultRingtoneLabel),
@@ -640,7 +656,6 @@ private fun AlarmEditorDialog(
                         )
                     }
                 }
-                OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("备注") })
                 Text("重复（周日→周六）", style = MaterialTheme.typography.labelMedium)
                 WeekdayPicker(daysSet) {
                     daysSet = it

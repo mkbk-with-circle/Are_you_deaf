@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import com.nierduolong.morningbell.weather.OpenMeteoWeather
+import com.nierduolong.morningbell.R
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -189,6 +190,42 @@ class AppRepository(
 
     suspend fun getChainSteps(groupId: Long): List<ChainAlarmStepEntity> =
         withContext(Dispatchers.IO) { chainAlarms.stepsForGroup(groupId) }
+
+    /** 响铃页与通知：标题 + 副标题（优先展示用户备注） */
+    data class AlarmRingUiLines(
+        val title: String,
+        val subtitle: String,
+    )
+
+    suspend fun getAlarmRingUiLines(scheduleId: Long, isChainStep: Boolean): AlarmRingUiLines? =
+        withContext(Dispatchers.IO) {
+            if (isChainStep) {
+                val step = chainAlarms.getStepById(scheduleId) ?: return@withContext null
+                val g = chainAlarms.getGroup(step.groupId) ?: return@withContext null
+                val title = context.getString(R.string.alarm_ring_chain_title_fmt, step.stepIndex + 1)
+                val subtitle =
+                    if (g.note.isNotBlank()) {
+                        g.note.trim()
+                    } else {
+                        context.getString(
+                            R.string.alarm_ring_chain_no_group_note_fmt,
+                            step.hour,
+                            step.minute,
+                        )
+                    }
+                AlarmRingUiLines(title, subtitle)
+            } else {
+                val a = alarms.getById(scheduleId) ?: return@withContext null
+                val title = context.getString(R.string.alarm_ring_single_title_fmt, a.hour, a.minute)
+                val subtitle =
+                    if (a.note.isNotBlank()) {
+                        a.note.trim()
+                    } else {
+                        context.getString(R.string.alarm_ring_no_note_hint)
+                    }
+                AlarmRingUiLines(title, subtitle)
+            }
+        }
 
     /** 响铃界面与前台服务用；单闸闹钟无 vibrate 字段时默认震动开启 */
     data class AlarmRingProfile(
