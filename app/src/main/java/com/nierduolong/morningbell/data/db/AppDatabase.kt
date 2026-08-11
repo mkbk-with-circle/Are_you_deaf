@@ -6,12 +6,12 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.nierduolong.morningbell.BuildConfig
 
 @Database(
     entities = [
         AlarmEntity::class,
         MoodEntity::class,
-        WakeDayEntity::class,
         GoalEntity::class,
         BirthdayEntity::class,
         BirthdayReminderEntity::class,
@@ -19,15 +19,17 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChainAlarmGroupEntity::class,
         ChainAlarmStepEntity::class,
         ChainDoneDayEntity::class,
-        VideoDiaryEntryEntity::class,
+        DailyLogEntity::class,
+        LogClipEntity::class,
+        DailyCompilationEntity::class,
+        LogCommentEntity::class,
     ],
-    version = 8,
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
     abstract fun moodDao(): MoodDao
-    abstract fun wakeDao(): WakeDao
     abstract fun goalDao(): GoalDao
     abstract fun birthdayDao(): BirthdayDao
 
@@ -35,7 +37,7 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract fun chainAlarmDao(): ChainAlarmDao
 
-    abstract fun videoDiaryDao(): VideoDiaryDao
+    abstract fun dailyLogDao(): DailyLogDao
 
     companion object {
         private val MIGRATION_1_2 =
@@ -142,6 +144,71 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
+        private val MIGRATION_8_9 =
+            object : Migration(8, 9) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("DROP TABLE IF EXISTS `video_diary_entries`")
+                    db.execSQL("DROP TABLE IF EXISTS `wake_days`")
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `daily_logs` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`name` TEXT NOT NULL, " +
+                            "`isPersonal` INTEGER NOT NULL, " +
+                            "`inviteCode` TEXT, " +
+                            "`createdAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `log_clips` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`logId` INTEGER NOT NULL, " +
+                            "`dayEpoch` INTEGER NOT NULL, " +
+                            "`filePath` TEXT NOT NULL, " +
+                            "`durationMs` INTEGER NOT NULL, " +
+                            "`caption` TEXT, " +
+                            "`createdAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_log_clips_logId_dayEpoch` " +
+                            "ON `log_clips` (`logId`, `dayEpoch`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `daily_compilations` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`logId` INTEGER NOT NULL, " +
+                            "`dayEpoch` INTEGER NOT NULL, " +
+                            "`filePath` TEXT NOT NULL, " +
+                            "`createdAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_daily_compilations_logId_dayEpoch` " +
+                            "ON `daily_compilations` (`logId`, `dayEpoch`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `log_comments` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`clipId` INTEGER NOT NULL, " +
+                            "`authorName` TEXT NOT NULL, " +
+                            "`text` TEXT NOT NULL, " +
+                            "`createdAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_log_comments_clipId` " +
+                            "ON `log_comments` (`clipId`)",
+                    )
+                }
+            }
+
+        /**
+         * 保留策略需要区分「素材还在」与「已被合成结果代替」。
+         * 默认 1（都还在），历史数据语义不变。
+         */
+        private val MIGRATION_9_10 =
+            object : Migration(9, 10) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN sourceKept INTEGER NOT NULL DEFAULT 1")
+                }
+            }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "morning_bell.db")
                 .addMigrations(
@@ -152,8 +219,14 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
+                    MIGRATION_8_9,
+                    MIGRATION_9_10,
                 )
-                .fallbackToDestructiveMigration()
+                .apply {
+                    // 推平重建只在开发期允许。正式包里漏写一次迁移就会静默清空用户
+                    // 全部闹钟与日志记录，那种「不崩但数据没了」的故障远比启动崩溃难发现。
+                    if (BuildConfig.DEBUG) fallbackToDestructiveMigration()
+                }
                 .build()
     }
 }

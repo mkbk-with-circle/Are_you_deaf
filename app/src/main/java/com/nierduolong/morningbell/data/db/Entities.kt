@@ -28,13 +28,6 @@ data class MoodEntity(
     val score: Int,
 )
 
-@Entity(tableName = "wake_days")
-data class WakeDayEntity(
-    @PrimaryKey val dayEpoch: Long,
-    /** 当日首次解锁（6:00 之后）时间戳 */
-    val firstUnlockMillis: Long,
-)
-
 @Entity(tableName = "goals")
 data class GoalEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -76,19 +69,83 @@ data class BirthdayReminderEntity(
     val lastAcknowledgedEventEpochDay: Long? = null,
 )
 
-/** 每日归档视频：文件在应用目录 VideoDiary/年/月/日/ 下，此处存元数据 */
-@Entity(
-    tableName = "video_diary_entries",
-    indices = [Index(value = ["dayEpoch"])],
-)
-data class VideoDiaryEntryEntity(
+/**
+ * Setlog 风格「每日日志」房间。当前版本仅本机一条 isPersonal=true 记录；
+ * inviteCode/多人字段为 Phase 2（真正多人同步）预留，暂不启用邀请流程。
+ */
+@Entity(tableName = "daily_logs")
+data class DailyLogEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** LocalDate.toEpochDay()，与文件夹日期一致 */
+    val name: String,
+    val isPersonal: Boolean = true,
+    val inviteCode: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** 一条拍摄素材：时长不限（Setlog 原版 2–4 秒，此处按需求不设硬性上限） */
+@Entity(
+    tableName = "log_clips",
+    indices = [Index(value = ["logId", "dayEpoch"])],
+)
+data class LogClipEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val logId: Long,
+    /** LocalDate.toEpochDay() */
     val dayEpoch: Long,
-    /** 相对 VideoDiary 根的路径 */
-    val relativePath: String,
-    val displayName: String,
-    val sizeBytes: Long,
-    val addedAtMillis: Long,
+    /** 相对 `dailylog/` 的路径；Repository 读出时会解析成本机绝对路径 */
+    val filePath: String,
+    val durationMs: Long,
+    val caption: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    /**
+     * 原始素材文件是否还在。按保留策略清理后置为 false：时间、说明、留言都留着，
+     * 只是那一条视频已经被合成结果代替了。
+     */
+    val sourceKept: Boolean = true,
+)
+
+/** 某个 Log 某一天的自动合成结果（顺序拼接；多人分屏留待 Phase 2） */
+@Entity(
+    tableName = "daily_compilations",
+    indices = [Index(value = ["logId", "dayEpoch"], unique = true)],
+)
+data class DailyCompilationEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val logId: Long,
+    val dayEpoch: Long,
+    /** 同 [LogClipEntity.filePath]：库里存相对路径 */
+    val filePath: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * 归档页用的按日聚合结果（非表，Room 查询投影）。
+ * [lastClipAt] 用于判断某天的合成结果是否已过期（有新素材进来）。
+ */
+data class DayLogSummary(
+    val dayEpoch: Long,
+    val clipCount: Int,
+    val totalDurationMs: Long,
+    val lastClipAt: Long,
+    /** 原始素材还在的条数；为 0 表示这一天已按保留策略精简，只剩合成结果 */
+    val keptCount: Int,
+    /**
+     * 归档网格的封面：当天第一条**未被清理**的素材。
+     * 全部素材都已清理时为 null，由 Repository 回落到当天的合成结果。
+     */
+    val coverPath: String?,
+)
+
+/** clip 下的留言；本机版仅自己留言，字段结构为 Phase 2 多人评论预留 */
+@Entity(
+    tableName = "log_comments",
+    indices = [Index(value = ["clipId"])],
+)
+data class LogCommentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val clipId: Long,
+    val authorName: String,
+    val text: String,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 

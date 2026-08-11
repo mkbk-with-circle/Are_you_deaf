@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  云备份体积有上限（约 25MB），日志视频动辄几百 MB，整包备份只会失败。
+  这里让数据库与设置照常备份（换机后闹钟、提醒周期、日志索引都在），
+  视频本体排除；换机直传不受此限制，默认仍会带走。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="external" path="dailylog/" />
+    </cloud-backup>
+</data-extraction-rules>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-files-path name="dailylog" path="dailylog/" />
+    <!-- 外置私有目录不可用时素材会落到内部存储，分享路径要一并覆盖 -->
+    <files-path name="dailylog_internal" path="dailylog/" />
+</paths>

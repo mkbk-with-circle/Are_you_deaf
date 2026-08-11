@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.nierduolong.morningbell.MorningBellApp
-import com.nierduolong.morningbell.unlock.WakeTrackStarter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -21,7 +20,6 @@ class AlarmReceiver : BroadcastReceiver() {
         val isBirthdayReminder = intent.getBooleanExtra(EXTRA_IS_BIRTHDAY_REMINDER, false)
         val isChainStep = intent.getBooleanExtra(EXTRA_IS_CHAIN_STEP, false)
         val snoozeOneShot = intent.getBooleanExtra(EXTRA_SNOOZE_ONE_SHOT, false)
-        WakeTrackStarter.ensureRunning(context)
         val app = context.applicationContext as MorningBellApp
 
         val pendingResult = goAsync()

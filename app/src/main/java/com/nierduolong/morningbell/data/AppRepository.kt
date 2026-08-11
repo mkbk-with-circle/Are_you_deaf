@@ -1,13 +1,14 @@
 package com.nierduolong.morningbell.data
 
 import android.content.Context
-import android.net.Uri
 import com.nierduolong.morningbell.alarm.AlarmScheduler
 import com.nierduolong.morningbell.alarm.BirthdayAlarmScheduler
 import com.nierduolong.morningbell.core.AlarmTimeCalculator
 import com.nierduolong.morningbell.core.BirthdayReminderLogic
 import com.nierduolong.morningbell.core.LunarBirthdayCalendar
+import com.nierduolong.morningbell.core.RetentionPolicy
 import com.nierduolong.morningbell.core.StickyThemeRegistry
+import com.nierduolong.morningbell.dailylog.DailyLogStorage
 import com.nierduolong.morningbell.data.db.AlarmEntity
 import com.nierduolong.morningbell.data.db.AppDatabase
 import com.nierduolong.morningbell.data.db.ChainAlarmGroupEntity
@@ -18,13 +19,18 @@ import com.nierduolong.morningbell.data.db.BirthdayReminderEntity
 import com.nierduolong.morningbell.data.db.ReminderTemplateEntity
 import com.nierduolong.morningbell.data.db.GoalEntity
 import com.nierduolong.morningbell.data.db.MoodEntity
-import com.nierduolong.morningbell.data.db.VideoDiaryEntryEntity
-import com.nierduolong.morningbell.data.db.WakeDayEntity
+import com.nierduolong.morningbell.data.db.DailyLogEntity
+import com.nierduolong.morningbell.data.db.DayLogSummary
+import com.nierduolong.morningbell.data.db.LogClipEntity
+import com.nierduolong.morningbell.data.db.DailyCompilationEntity
+import com.nierduolong.morningbell.data.db.LogCommentEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import com.nierduolong.morningbell.weather.OpenMeteoWeather
 import com.nierduolong.morningbell.R
@@ -41,60 +47,35 @@ class AppRepository(
     private val alarms = db.alarmDao()
     private val chainAlarms = db.chainAlarmDao()
     private val moods = db.moodDao()
-    private val wakes = db.wakeDao()
     private val goals = db.goalDao()
     private val birthdays = db.birthdayDao()
     private val reminderTemplates = db.reminderTemplateDao()
-    private val videoDiary = db.videoDiaryDao()
-    private val wakeSettings = WakeSettings(context)
+    private val dailyLog = db.dailyLogDao()
     private val stickyThemeSettings = StickyThemeSettings(context)
-    private val wakeThresholdMinuteOfDayState = MutableStateFlow(wakeSettings.getMinuteOfDay())
+    private val dailyLogSettings = DailyLogSettings(context)
     private val stickyThemePackIdState =
         MutableStateFlow(stickyThemeSettings.getUserSelectedThemePack())
+    private val personalLogIdState = MutableStateFlow<Long?>(null)
 
     val alarmFlow: Flow<List<AlarmEntity>> = alarms.observeAlarms()
     val chainGroupFlow: Flow<List<ChainAlarmGroupEntity>> = chainAlarms.observeGroups()
     val chainStepFlow: Flow<List<ChainAlarmStepEntity>> = chainAlarms.observeAllSteps()
     val moodFlow: Flow<List<MoodEntity>> = moods.observeRecent()
-    val wakeFlow: Flow<List<WakeDayEntity>> = wakes.observeRecent()
     val goalFlow: Flow<List<GoalEntity>> = goals.observeGoals()
     val birthdayFlow: Flow<List<BirthdayEntity>> = birthdays.observeBirthdays()
     val reminderTemplateFlow: Flow<List<ReminderTemplateEntity>> = reminderTemplates.observeTemplates()
-    val videoDiaryEntryFlow: Flow<List<VideoDiaryEntryEntity>> = videoDiary.observeAll()
-
-    /** 早起统计起始时间（0 点起算分钟），用于界面与解锁判断同步 */
-    val wakeThresholdMinuteOfDayFlow: StateFlow<Int> = wakeThresholdMinuteOfDayState.asStateFlow()
 
     /** 便利贴「语录」主题包 id，与 [StickyThemeSettings] 同步 */
     val stickyThemePackIdFlow: StateFlow<String> = stickyThemePackIdState.asStateFlow()
 
-    suspend fun setWakeThresholdMinuteOfDay(minutes: Int) =
-        withContext(Dispatchers.IO) {
-            wakeSettings.setMinuteOfDay(minutes)
-            val applied = wakeSettings.getMinuteOfDay()
-            wakeThresholdMinuteOfDayState.value = applied
-            // 起始时间上调后，当日已存解锁若早于新阈值则失效，需清除以免界面矛盾
-            reconcileTodayWakeIfInvalid(applied)
-        }
+    /** 本机唯一的个人日志 id；[ensurePersonalDailyLog] 完成前为 null */
+    val personalLogIdFlow: StateFlow<Long?> = personalLogIdState.asStateFlow()
 
     suspend fun setStickyThemePack(id: String) =
         withContext(Dispatchers.IO) {
             stickyThemeSettings.setUserSelectedThemePack(id)
             stickyThemePackIdState.value = stickyThemeSettings.getUserSelectedThemePack()
         }
-
-    /** 校验「今日」已记录的首次解锁是否仍不早于当前起始时刻；否则删除当日记录 */
-    private suspend fun reconcileTodayWakeIfInvalid(thresholdMinuteOfDay: Int) {
-        val today = LocalDate.now().toEpochDay()
-        val row = wakes.getForDay(today) ?: return
-        val zone = ZoneId.systemDefault()
-        val unlockLocal =
-            Instant.ofEpochMilli(row.firstUnlockMillis).atZone(zone).toLocalTime()
-        val unlockMinuteOfDay = unlockLocal.hour * 60 + unlockLocal.minute
-        if (unlockMinuteOfDay < thresholdMinuteOfDay) {
-            wakes.deleteForDay(today)
-        }
-    }
 
     /** 响铃通知文案 + 当前周期公历生日 epochDay（用于 ack） */
     data class BirthdayNotifyBundle(
@@ -411,18 +392,6 @@ class AppRepository(
             )
         }
 
-    /** 当日首次解锁且不早于「早起统计起始」时写入起床时间（起始时刻可在设置里改，便于测试） */
-    suspend fun recordUnlockIfMorning() =
-        withContext(Dispatchers.IO) {
-            val threshold = wakeSettings.getMinuteOfDay()
-            val nowTime = java.time.LocalTime.now()
-            val nowMinuteOfDay = nowTime.hour * 60 + nowTime.minute
-            if (nowMinuteOfDay < threshold) return@withContext
-            val today = LocalDate.now().toEpochDay()
-            if (wakes.getForDay(today) != null) return@withContext
-            wakes.upsert(WakeDayEntity(dayEpoch = today, firstUnlockMillis = System.currentTimeMillis()))
-        }
-
     suspend fun seedIfEmpty() =
         withContext(Dispatchers.IO) {
             if (goals.activeGoals().isEmpty()) {
@@ -678,31 +647,360 @@ class AppRepository(
         val sticky: StickyPayload,
     )
 
-    /** 视频日记根目录（应用专属外置或内部 files）绝对路径，便于在文件管理器中查找 */
-    fun getVideoDiaryRootAbsolutePath(): String = VideoDiaryStorage.rootDir(context).absolutePath
+    // ---------------------------------------------------------------------
+    // Setlog 风格「每日日志」：Log / 拍摄素材 / 每日合成 / 留言
+    // ---------------------------------------------------------------------
 
-    /** 将相册/文件中的视频复制到 年/月/日 子目录，并落库。失败抛异常由界面提示。 */
-    suspend fun importVideoDiary(
-        uri: Uri,
+    /** 确保存在唯一的本机个人 Log，并把 id 发布到 [personalLogIdFlow]（功能 1，Phase 2 多人预留） */
+    suspend fun ensurePersonalDailyLog(): Long =
+        withContext(Dispatchers.IO) {
+            val existing = dailyLog.getPersonalLog()
+            val id =
+                existing?.id ?: dailyLog.upsertLog(
+                    DailyLogEntity(name = "我的日志", isPersonal = true),
+                )
+            personalLogIdState.value = id
+            id
+        }
+
+    // -- 路径归一化的唯一切面 --------------------------------------------
+    // 库里存相对路径，界面与播放器要的是绝对路径。转换只发生在这一层：
+    // 上层拿到的永远是可直接打开的绝对路径，写入时永远被压回相对路径。
+
+    private fun absolute(stored: String): String = DailyLogStorage.resolve(context, stored).absolutePath
+
+    private fun LogClipEntity.resolved(): LogClipEntity = copy(filePath = absolute(filePath))
+
+    private fun DailyCompilationEntity.resolved(): DailyCompilationEntity = copy(filePath = absolute(filePath))
+
+    fun clipsFlow(logId: Long): Flow<List<LogClipEntity>> =
+        dailyLog.observeClips(logId).map { list -> list.map { it.resolved() } }
+
+    fun clipsForDayFlow(
+        logId: Long,
         dayEpoch: Long,
+    ): Flow<List<LogClipEntity>> = dailyLog.observeClipsForDay(logId, dayEpoch).map { list -> list.map { it.resolved() } }
+
+    /**
+     * 归档页数据源：每天的素材条数、总时长、最后一条时间与封面。
+     * 原始素材已按保留策略清理的日期没有 clip 封面，这里回落到当天的合成结果，
+     * 否则那些天在归档里会变成一片空白灰格。
+     */
+    fun daySummariesFlow(logId: Long): Flow<List<DayLogSummary>> =
+        dailyLog.observeDaySummaries(logId).combine(dailyLog.observeCompilations(logId)) { summaries, compilations ->
+            val compiledPaths = compilations.associate { it.dayEpoch to it.filePath }
+            summaries.map { summary ->
+                val cover = summary.coverPath ?: compiledPaths[summary.dayEpoch]
+                summary.copy(coverPath = cover?.let { absolute(it) })
+            }
+        }
+
+    fun compilationsFlow(logId: Long): Flow<List<DailyCompilationEntity>> =
+        dailyLog.observeCompilations(logId).map { list -> list.map { it.resolved() } }
+
+    fun commentsFlow(clipId: Long): Flow<List<LogCommentEntity>> = dailyLog.observeComments(clipId)
+
+    /**
+     * 拍摄完成后落库（功能 3）。
+     * [dayEpoch] 由调用方传入录制开始那一刻的日期，避免跨零点录制时素材被归到第二天、
+     * 与文件所在的日期目录不一致。
+     */
+    suspend fun insertLogClip(
+        logId: Long,
+        filePath: String,
+        durationMs: Long,
+        caption: String?,
+        dayEpoch: Long = LocalDate.now().toEpochDay(),
     ): Long =
         withContext(Dispatchers.IO) {
-            val imported = VideoDiaryStorage.importFromUri(context, uri, dayEpoch).getOrThrow()
-            videoDiary.insert(
-                VideoDiaryEntryEntity(
+            dailyLog.insertClip(
+                LogClipEntity(
+                    logId = logId,
                     dayEpoch = dayEpoch,
-                    relativePath = imported.relativePath,
-                    displayName = imported.displayName,
-                    sizeBytes = imported.sizeBytes,
-                    addedAtMillis = System.currentTimeMillis(),
+                    filePath = DailyLogStorage.relativize(context, filePath),
+                    durationMs = durationMs,
+                    caption = caption?.trim()?.takeIf { it.isNotEmpty() },
                 ),
             )
         }
 
-    suspend fun deleteVideoDiaryEntry(id: Long) =
+    suspend fun updateLogClipCaption(
+        clipId: Long,
+        caption: String,
+    ) = withContext(Dispatchers.IO) {
+        val clip = dailyLog.getClip(clipId) ?: return@withContext
+        dailyLog.updateClip(clip.copy(caption = caption.trim().takeIf { it.isNotEmpty() }))
+    }
+
+    /** 本地留言（功能 6；本机版仅自己留言，authorName 用本地昵称） */
+    suspend fun addLogComment(
+        clipId: Long,
+        text: String,
+    ) = withContext(Dispatchers.IO) {
+        val t = text.trim()
+        if (t.isEmpty()) return@withContext
+        dailyLog.insertComment(
+            LogCommentEntity(
+                clipId = clipId,
+                authorName = dailyLogSettings.getNickname(),
+                text = t,
+            ),
+        )
+    }
+
+    /** 删除素材：文件 + 留言 + 记录一起清，并让当天已有的合成结果失效（下次进详情页会提示重合成） */
+    suspend fun deleteLogClip(id: Long) =
         withContext(Dispatchers.IO) {
-            val e = videoDiary.getById(id) ?: return@withContext
-            VideoDiaryStorage.deletePhysicalFile(context, e.relativePath)
-            videoDiary.deleteById(id)
+            val clip = dailyLog.getClip(id) ?: return@withContext
+            if (clip.sourceKept) {
+                runCatching { DailyLogStorage.resolve(context, clip.filePath).delete() }
+            }
+            dailyLog.deleteCommentsForClip(id)
+            dailyLog.deleteClip(id)
+            // 已按保留策略精简的素材不能连带删合成：那时合成是这一天唯一的留存，
+            // 删掉等于因为清理一条占位记录而抹掉整天，而且再也无法重新合成。
+            if (clip.sourceKept) deleteDailyCompilation(clip.logId, clip.dayEpoch)
+        }
+
+    /** 删除某天的合成结果（文件 + 记录）。素材变动后调用，避免用户看到过期的一日日志 */
+    suspend fun deleteDailyCompilation(
+        logId: Long,
+        dayEpoch: Long,
+    ) = withContext(Dispatchers.IO) {
+        val existing = dailyLog.compilationForDay(logId, dayEpoch)
+        if (existing != null) {
+            runCatching { DailyLogStorage.resolve(context, existing.filePath).delete() }
+            dailyLog.deleteCompilationForDay(logId, dayEpoch)
+        }
+    }
+
+    /** 某天最后一条素材的时间，用于判断合成结果是否已过期 */
+    suspend fun lastClipCreatedAt(
+        logId: Long,
+        dayEpoch: Long,
+    ): Long? = withContext(Dispatchers.IO) { dailyLog.lastClipCreatedAt(logId, dayEpoch) }
+
+    /** 日志占用的磁盘字节数（素材 + 合成 + 缩略图） */
+    suspend fun dailyLogOccupiedBytes(): Long =
+        withContext(Dispatchers.IO) {
+            com.nierduolong.morningbell.dailylog.DailyLogStorage.occupiedBytes(context)
+        }
+
+    /**
+     * 清理不在册的孤儿素材文件（录制中途崩溃、被外部删库等情况留下的半截 mp4），返回删除数。
+     * 每次启动跑一次，属于自愈逻辑：不依赖用户手动清理就能避免垃圾无限堆积。
+     */
+    suspend fun pruneOrphanDailyLogFiles(): Int =
+        withContext(Dispatchers.IO) {
+            val known = dailyLog.allClipPaths().toSet()
+            com.nierduolong.morningbell.dailylog.DailyLogStorage.pruneOrphanFiles(context, known)
+        }
+
+    /** 手动清缓存：缩略图可随时按需重建，清掉能立刻换回空间 */
+    suspend fun clearDailyLogThumbnailCache() =
+        withContext(Dispatchers.IO) {
+            com.nierduolong.morningbell.dailylog.DailyLogStorage.clearThumbnailCache(context)
+        }
+
+    suspend fun clipsForDay(
+        logId: Long,
+        dayEpoch: Long,
+    ): List<LogClipEntity> = withContext(Dispatchers.IO) { dailyLog.clipsForDay(logId, dayEpoch).map { it.resolved() } }
+
+    suspend fun getCompilationForDay(
+        logId: Long,
+        dayEpoch: Long,
+    ): DailyCompilationEntity? = withContext(Dispatchers.IO) { dailyLog.compilationForDay(logId, dayEpoch)?.resolved() }
+
+    /** 一日日志合成完成后落库（功能 4） */
+    suspend fun saveDailyCompilation(
+        logId: Long,
+        dayEpoch: Long,
+        filePath: String,
+    ): Long =
+        withContext(Dispatchers.IO) {
+            dailyLog.upsertCompilation(
+                DailyCompilationEntity(
+                    logId = logId,
+                    dayEpoch = dayEpoch,
+                    filePath = DailyLogStorage.relativize(context, filePath),
+                ),
+            )
+        }
+
+    // ---------------------------------------------------------------------
+    // 保留策略与路径自愈
+    // ---------------------------------------------------------------------
+
+    private val retentionDaysState = MutableStateFlow(dailyLogSettings.getRetentionDays())
+
+    /** 原始素材保留天数：0 = 永久保留 */
+    val retentionDaysFlow: StateFlow<Int> = retentionDaysState.asStateFlow()
+
+    /** 改保留策略并立刻执行一轮，返回被精简的天数（用于给用户即时反馈） */
+    suspend fun setRetentionDays(days: Int): Int =
+        withContext(Dispatchers.IO) {
+            dailyLogSettings.setRetentionDays(days)
+            retentionDaysState.value = dailyLogSettings.getRetentionDays()
+            // 不立刻清一轮的话，用户改完设置看不到占用下降，会以为设置没生效
+            runCatching { applyRetentionPolicy() }.getOrDefault(0)
+        }
+
+    /**
+     * 清理某天的原始素材，只保留一日合成。返回删掉的文件数。
+     *
+     * 前置条件很硬：当天必须已有**存在且非空**的合成文件，否则直接放弃——
+     * 没有合成还删素材等于把这一天彻底抹掉，是不可逆的数据丢失。
+     * 记录与留言全部保留，只把 [LogClipEntity.sourceKept] 标成 false。
+     */
+    suspend fun cleanDaySources(
+        logId: Long,
+        dayEpoch: Long,
+    ): Int =
+        withContext(Dispatchers.IO) {
+            val compilation = dailyLog.compilationForDay(logId, dayEpoch) ?: return@withContext 0
+            val compiled = DailyLogStorage.resolve(context, compilation.filePath)
+            if (!compiled.exists() || compiled.length() <= 0) return@withContext 0
+
+            val clips = dailyLog.clipsForDay(logId, dayEpoch).filter { it.sourceKept }
+            if (clips.isEmpty()) return@withContext 0
+            var cleaned = 0
+            clips.forEach { clip ->
+                val file = DailyLogStorage.resolve(context, clip.filePath)
+                // 合成文件本身绝不能被当成素材删掉
+                if (file.absolutePath == compiled.absolutePath) return@forEach
+                // 文件本来就不在（早先被外部清掉）也算清理完成，否则这一天会永远卡在待清理
+                val gone = runCatching { !file.exists() || file.delete() }.getOrDefault(false)
+                if (gone) cleaned++
+            }
+            dailyLog.markDaySourceCleaned(logId, dayEpoch)
+            DailyLogStorage.deleteDayDirIfEmpty(context, dayEpoch)
+            cleaned
+        }
+
+    /** 按当前保留天数清理所有到期日期，返回被清理的天数 */
+    suspend fun applyRetentionPolicy(): Int =
+        withContext(Dispatchers.IO) {
+            val days = dailyLogSettings.getRetentionDays()
+            val cutoff = RetentionPolicy.cutoffDay(LocalDate.now().toEpochDay(), days) ?: return@withContext 0
+            val logId = personalLogIdState.value ?: dailyLog.getPersonalLog()?.id ?: return@withContext 0
+            dailyLog.daysEligibleForCleanup(logId, cutoff).count { day ->
+                cleanDaySources(logId, day) > 0
+            }
+        }
+
+    /**
+     * 把历史记录里的绝对路径改写成相对路径，顺带修复指向不存在文件的记录。
+     *
+     * 早期版本存的是绝对路径，一旦外置私有目录挂载点变化（换机、恢复备份、分区调整）
+     * 全部记录会集体变成死链。这里做一次性归一化：能压成相对路径的压掉，压不掉但文件
+     * 确实还在目录里的按文件名重定位，两者都失败的**保持原样**——宁可留一条暂时打不开
+     * 的记录，也不能凭猜测改写用户数据。
+     */
+    suspend fun normalizeDailyLogPaths(): Int =
+        withContext(Dispatchers.IO) {
+            val index = DailyLogStorage.fileIndexByName(context)
+            var fixed = 0
+            var unresolved = 0
+
+            dailyLog.allClips().forEach { clip ->
+                when (val outcome = normalizePath(clip.filePath, index)) {
+                    is PathFix.Rewrite -> {
+                        dailyLog.updateClipPath(clip.id, outcome.path)
+                        fixed++
+                    }
+
+                    PathFix.Unresolved -> unresolved++
+                    PathFix.AlreadyGood -> Unit
+                }
+            }
+            dailyLog.allCompilations().forEach { compilation ->
+                when (val outcome = normalizePath(compilation.filePath, index)) {
+                    is PathFix.Rewrite -> {
+                        dailyLog.updateCompilationPath(compilation.id, outcome.path)
+                        fixed++
+                    }
+
+                    // 合成结果丢了不算问题：素材还在的话下次会重新合成
+                    PathFix.Unresolved -> Unit
+                    PathFix.AlreadyGood -> Unit
+                }
+            }
+
+            // 还有素材没落实到具体文件时不打标记，下次启动再试一次。
+            // 首启时外置私有目录偶尔尚未挂载，这种瞬时失败不该被永久固化。
+            if (unresolved == 0) dailyLogSettings.setPathsNormalized(true)
+            fixed
+        }
+
+    private sealed interface PathFix {
+        /** 已经是可用的相对路径，不需要改 */
+        data object AlreadyGood : PathFix
+
+        /** 文件找不到，保持原样等下次再试 */
+        data object Unresolved : PathFix
+
+        data class Rewrite(val path: String) : PathFix
+    }
+
+    private fun normalizePath(
+        stored: String,
+        index: Map<String, String>,
+    ): PathFix {
+        val relative = DailyLogStorage.relativize(context, stored)
+        if (DailyLogStorage.resolve(context, relative).exists()) {
+            return if (relative == stored) PathFix.AlreadyGood else PathFix.Rewrite(relative)
+        }
+        val relocated = DailyLogStorage.relocate(context, stored, index)
+        return when {
+            relocated == null -> PathFix.Unresolved
+            relocated == stored -> PathFix.AlreadyGood
+            else -> PathFix.Rewrite(relocated)
+        }
+    }
+
+    suspend fun hasNormalizedDailyLogPaths(): Boolean = withContext(Dispatchers.IO) { dailyLogSettings.hasNormalizedPaths() }
+
+    // ---------------------------------------------------------------------
+    // 拍摄提醒周期与本地昵称（功能 2 / 7）
+    // ---------------------------------------------------------------------
+
+    private val reminderCadenceState = MutableStateFlow(dailyLogSettings.getReminderCadence())
+    val reminderCadenceFlow: StateFlow<DailyLogSettings.ReminderCadence> = reminderCadenceState.asStateFlow()
+
+    /** 活跃时段 [起始小时, 结束小时)，提醒只在这个区间内响 */
+    private val reminderWindowState =
+        MutableStateFlow(dailyLogSettings.getActiveStartHour() to dailyLogSettings.getActiveEndHour())
+    val reminderWindowFlow: StateFlow<Pair<Int, Int>> = reminderWindowState.asStateFlow()
+
+    suspend fun setReminderCadence(cadence: DailyLogSettings.ReminderCadence) =
+        withContext(Dispatchers.IO) {
+            dailyLogSettings.setReminderCadence(cadence)
+            reminderCadenceState.value = cadence
+            com.nierduolong.morningbell.dailylog.ReminderScheduler.apply(context, cadence)
+        }
+
+    suspend fun setReminderWindow(
+        startHour: Int,
+        endHour: Int,
+    ) = withContext(Dispatchers.IO) {
+        dailyLogSettings.setActiveWindow(startHour, endHour)
+        reminderWindowState.value = dailyLogSettings.getActiveStartHour() to dailyLogSettings.getActiveEndHour()
+        // 时段变了要按新窗口重排，否则下一次仍会落在旧时段里
+        com.nierduolong.morningbell.dailylog.ReminderScheduler.apply(context, reminderCadenceState.value)
+    }
+
+    private val nicknameState = MutableStateFlow(dailyLogSettings.getNickname())
+    val nicknameFlow: StateFlow<String> = nicknameState.asStateFlow()
+    private val onboardedState = MutableStateFlow(dailyLogSettings.hasOnboarded())
+    val hasOnboardedFlow: StateFlow<Boolean> = onboardedState.asStateFlow()
+
+    suspend fun setNickname(name: String) =
+        withContext(Dispatchers.IO) {
+            val t = name.trim().ifEmpty { "我" }
+            dailyLogSettings.setNickname(t)
+            dailyLogSettings.setOnboarded(true)
+            nicknameState.value = t
+            onboardedState.value = true
         }
 }

@@ -41,22 +41,6 @@ interface MoodDao {
 }
 
 @Dao
-interface WakeDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(entity: WakeDayEntity)
-
-    /** 多取一些行，便于「本月早起」图表跨月边界仍有数据 */
-    @Query("SELECT * FROM wake_days ORDER BY dayEpoch DESC LIMIT 400")
-    fun observeRecent(): Flow<List<WakeDayEntity>>
-
-    @Query("SELECT * FROM wake_days WHERE dayEpoch = :day")
-    suspend fun getForDay(day: Long): WakeDayEntity?
-
-    @Query("DELETE FROM wake_days WHERE dayEpoch = :dayEpoch")
-    suspend fun deleteForDay(dayEpoch: Long)
-}
-
-@Dao
 interface GoalDao {
     @Query("SELECT * FROM goals WHERE completed = 0 ORDER BY deadlineEpochDay ASC")
     suspend fun activeGoals(): List<GoalEntity>
@@ -117,18 +101,131 @@ interface BirthdayDao {
 }
 
 @Dao
-interface VideoDiaryDao {
-    @Query("SELECT * FROM video_diary_entries ORDER BY dayEpoch DESC, id DESC")
-    fun observeAll(): Flow<List<VideoDiaryEntryEntity>>
+interface DailyLogDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertLog(log: DailyLogEntity): Long
 
-    @Query("SELECT * FROM video_diary_entries WHERE id = :id")
-    suspend fun getById(id: Long): VideoDiaryEntryEntity?
+    @Query("SELECT * FROM daily_logs WHERE isPersonal = 1 LIMIT 1")
+    suspend fun getPersonalLog(): DailyLogEntity?
+
+    @Query("SELECT * FROM daily_logs ORDER BY id ASC")
+    fun observeLogs(): Flow<List<DailyLogEntity>>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(e: VideoDiaryEntryEntity): Long
+    suspend fun insertClip(clip: LogClipEntity): Long
 
-    @Query("DELETE FROM video_diary_entries WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    @Query("SELECT * FROM log_clips WHERE logId = :logId ORDER BY dayEpoch DESC, id DESC")
+    fun observeClips(logId: Long): Flow<List<LogClipEntity>>
+
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch ORDER BY id ASC")
+    suspend fun clipsForDay(
+        logId: Long,
+        dayEpoch: Long,
+    ): List<LogClipEntity>
+
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch ORDER BY createdAt ASC, id ASC")
+    fun observeClipsForDay(
+        logId: Long,
+        dayEpoch: Long,
+    ): Flow<List<LogClipEntity>>
+
+    /** 归档页按日汇总（含封面路径），避免把全部 clip 拉进内存再分组 */
+    @Query(
+        "SELECT c.dayEpoch AS dayEpoch, COUNT(*) AS clipCount, SUM(c.durationMs) AS totalDurationMs, " +
+            "MAX(c.createdAt) AS lastClipAt, SUM(c.sourceKept) AS keptCount, " +
+            "(SELECT c2.filePath FROM log_clips c2 WHERE c2.logId = c.logId AND c2.dayEpoch = c.dayEpoch " +
+            "AND c2.sourceKept = 1 ORDER BY c2.createdAt ASC, c2.id ASC LIMIT 1) AS coverPath " +
+            "FROM log_clips c WHERE c.logId = :logId " +
+            "GROUP BY c.dayEpoch ORDER BY c.dayEpoch DESC",
+    )
+    fun observeDaySummaries(logId: Long): Flow<List<DayLogSummary>>
+
+    @Query("SELECT MAX(createdAt) FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch")
+    suspend fun lastClipCreatedAt(
+        logId: Long,
+        dayEpoch: Long,
+    ): Long?
+
+    /** 孤儿文件清理用：数据库里在册的全部素材路径 */
+    @Query("SELECT filePath FROM log_clips")
+    suspend fun allClipPaths(): List<String>
+
+    /** 路径归一化用：需要逐条改写 filePath，所以要整行 */
+    @Query("SELECT * FROM log_clips")
+    suspend fun allClips(): List<LogClipEntity>
+
+    @Query("SELECT * FROM daily_compilations")
+    suspend fun allCompilations(): List<DailyCompilationEntity>
+
+    @Query("UPDATE log_clips SET filePath = :filePath WHERE id = :id")
+    suspend fun updateClipPath(
+        id: Long,
+        filePath: String,
+    )
+
+    @Query("UPDATE daily_compilations SET filePath = :filePath WHERE id = :id")
+    suspend fun updateCompilationPath(
+        id: Long,
+        filePath: String,
+    )
+
+    /** 保留策略执行后只改标记，时间/说明/留言全部留下 */
+    @Query("UPDATE log_clips SET sourceKept = 0 WHERE logId = :logId AND dayEpoch = :dayEpoch")
+    suspend fun markDaySourceCleaned(
+        logId: Long,
+        dayEpoch: Long,
+    )
+
+    /**
+     * 保留策略的候选日期：已经有合成结果、且仍有未清理原始素材、且不晚于 [maxDayEpoch]。
+     * 用 INNER JOIN 保证「没合成过的日期绝不会被清」。
+     */
+    @Query(
+        "SELECT DISTINCT c.dayEpoch FROM log_clips c " +
+            "INNER JOIN daily_compilations p ON p.logId = c.logId AND p.dayEpoch = c.dayEpoch " +
+            "WHERE c.logId = :logId AND c.sourceKept = 1 AND c.dayEpoch <= :maxDayEpoch " +
+            "ORDER BY c.dayEpoch ASC",
+    )
+    suspend fun daysEligibleForCleanup(
+        logId: Long,
+        maxDayEpoch: Long,
+    ): List<Long>
+
+    @Query("SELECT * FROM log_clips WHERE id = :id")
+    suspend fun getClip(id: Long): LogClipEntity?
+
+    @Update
+    suspend fun updateClip(clip: LogClipEntity)
+
+    @Query("DELETE FROM log_clips WHERE id = :id")
+    suspend fun deleteClip(id: Long)
+
+    @Query("DELETE FROM log_comments WHERE clipId = :clipId")
+    suspend fun deleteCommentsForClip(clipId: Long)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCompilation(c: DailyCompilationEntity): Long
+
+    @Query("DELETE FROM daily_compilations WHERE logId = :logId AND dayEpoch = :dayEpoch")
+    suspend fun deleteCompilationForDay(
+        logId: Long,
+        dayEpoch: Long,
+    )
+
+    @Query("SELECT * FROM daily_compilations WHERE logId = :logId AND dayEpoch = :dayEpoch LIMIT 1")
+    suspend fun compilationForDay(
+        logId: Long,
+        dayEpoch: Long,
+    ): DailyCompilationEntity?
+
+    @Query("SELECT * FROM daily_compilations WHERE logId = :logId ORDER BY dayEpoch DESC")
+    fun observeCompilations(logId: Long): Flow<List<DailyCompilationEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertComment(c: LogCommentEntity): Long
+
+    @Query("SELECT * FROM log_comments WHERE clipId = :clipId ORDER BY id ASC")
+    fun observeComments(clipId: Long): Flow<List<LogCommentEntity>>
 }
 
 @Dao

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 及更早的备份规则，与 backup_rules.xml 保持一致 -->
+<full-backup-content>
+    <exclude domain="external" path="dailylog/" />
+</full-backup-content>

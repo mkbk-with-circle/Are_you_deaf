@@ -5,17 +5,17 @@ import org.junit.Test
 
 class CompanionLogicTest {
     @Test
-    fun wakeStreak_countsBackwardsFromTodayOrYesterday() {
+    fun moodStreak_countsBackwardsFromTodayOrYesterday() {
         val today = 100L
         val set = setOf(today, today - 1, today - 2)
-        assertEquals(3, CompanionLogic.computeWakeStreak(set, today))
+        assertEquals(3, CompanionLogic.computeMoodStreak(set, today))
     }
 
     @Test
-    fun wakeStreak_skipsTodayIfEmpty() {
+    fun moodStreak_skipsTodayIfEmpty() {
         val today = 50L
         val set = setOf(today - 1, today - 2)
-        assertEquals(2, CompanionLogic.computeWakeStreak(set, today))
+        assertEquals(2, CompanionLogic.computeMoodStreak(set, today))
     }
 
     @Test
