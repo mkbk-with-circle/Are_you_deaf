@@ -12,13 +12,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,7 +30,6 @@ import androidx.compose.ui.unit.dp
 import com.nierduolong.morningbell.MainActivity
 import com.nierduolong.morningbell.MorningBellApp
 import com.nierduolong.morningbell.R
-import com.nierduolong.morningbell.unlock.WakeTrackStarter
 import com.nierduolong.morningbell.ui.theme.MorningBellTheme
 import kotlinx.coroutines.launch
 
@@ -37,7 +37,6 @@ import kotlinx.coroutines.launch
 class AlarmRingActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        WakeTrackStarter.ensureRunning(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -68,7 +67,7 @@ class AlarmRingActivity : ComponentActivity() {
                             Modifier
                                 .fillMaxSize()
                                 .verticalScroll(rememberScrollState())
-                                .padding(24.dp),
+                                .padding(horizontal = 28.dp, vertical = 32.dp),
                         verticalArrangement = Arrangement.Center,
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
@@ -88,67 +87,11 @@ class AlarmRingActivity : ComponentActivity() {
                             Text(
                                 text = ringSubtitle,
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onBackground,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        Spacer(Modifier.height(24.dp))
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    stopRinging()
-                                    if (isBirthdayReminder) {
-                                        app.repository.scheduleBirthdayReminderSnooze(alarmId)
-                                    } else {
-                                        app.repository.scheduleSnoozeFiveMinutes(alarmId, isChainStep)
-                                    }
-                                    finish()
-                                }
-                            },
-                            modifier = Modifier.padding(8.dp),
-                        ) {
-                            Text(stringResource(R.string.alarm_ring_snooze))
-                        }
-                        if (isBirthdayReminder && eventEpochForAck != Long.MIN_VALUE) {
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        stopRinging()
-                                        app.repository.ackBirthdayReminderForEventCycle(
-                                            alarmId,
-                                            eventEpochForAck,
-                                        )
-                                        finish()
-                                    }
-                                },
-                                modifier = Modifier.padding(8.dp),
-                                colors =
-                                    ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    ),
-                            ) {
-                                Text("本周期已处理")
-                            }
-                        }
-                        if (isChainStep) {
-                            Button(
-                                onClick = {
-                                    scope.launch {
-                                        stopRinging()
-                                        app.repository.onChainStepDoneEarly(alarmId)
-                                        finish()
-                                    }
-                                },
-                                modifier = Modifier.padding(8.dp),
-                                colors =
-                                    ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                                    ),
-                            ) {
-                                Text(stringResource(R.string.alarm_ring_chain_done))
-                            }
-                        }
+                        Spacer(Modifier.height(36.dp))
+                        // 主操作：关闹钟进入流；次要操作用描边按钮，不用糖果色实心
                         Button(
                             onClick = {
                                 scope.launch {
@@ -164,13 +107,59 @@ class AlarmRingActivity : ComponentActivity() {
                                     finish()
                                 }
                             },
-                            colors =
-                                ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                ),
-                            modifier = Modifier.padding(8.dp),
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(stringResource(R.string.alarm_ring_dismiss_flow))
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    stopRinging()
+                                    if (isBirthdayReminder) {
+                                        app.repository.scheduleBirthdayReminderSnooze(alarmId)
+                                    } else {
+                                        app.repository.scheduleSnoozeFiveMinutes(alarmId, isChainStep)
+                                    }
+                                    finish()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.alarm_ring_snooze))
+                        }
+                        if (isBirthdayReminder && eventEpochForAck != Long.MIN_VALUE) {
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        stopRinging()
+                                        app.repository.ackBirthdayReminderForEventCycle(
+                                            alarmId,
+                                            eventEpochForAck,
+                                        )
+                                        finish()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("本周期已处理")
+                            }
+                        }
+                        if (isChainStep) {
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        stopRinging()
+                                        app.repository.onChainStepDoneEarly(alarmId)
+                                        finish()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(stringResource(R.string.alarm_ring_chain_done))
+                            }
                         }
                     }
                 }

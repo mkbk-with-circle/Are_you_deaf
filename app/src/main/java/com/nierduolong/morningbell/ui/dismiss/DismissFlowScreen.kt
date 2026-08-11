@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,16 +17,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.ui.res.stringResource
-import com.nierduolong.morningbell.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,8 +31,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.nierduolong.morningbell.R
 import com.nierduolong.morningbell.core.BirthdayReminderLogic
 import com.nierduolong.morningbell.data.AppRepository
 import kotlinx.coroutines.launch
@@ -88,13 +85,13 @@ fun DismissFlowRoute(
     Column(
         Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(
-            "闹钟已关闭 · 上下滑动浏览（共 ${pages.size} 张）",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground,
+            "闹钟已关闭 · 上下滑动浏览",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         VerticalPager(
             state = pagerState,
@@ -102,8 +99,8 @@ fun DismissFlowRoute(
                 Modifier
                     .fillMaxWidth()
                     .weight(1f),
-            contentPadding = PaddingValues(horizontal = 8.dp),
-            pageSpacing = 12.dp,
+            contentPadding = PaddingValues(vertical = 4.dp),
+            pageSpacing = 16.dp,
         ) { index ->
             when (val page = pages[index]) {
                 is Page.Birthday ->
@@ -111,7 +108,7 @@ fun DismissFlowRoute(
                         visible = true,
                         enter = fadeIn() + slideInVertically { it / 4 },
                     ) {
-                        BirthdayReminderCard(page.card)
+                        BirthdayReminderPanel(page.card)
                     }
 
                 is Page.Sticky ->
@@ -119,7 +116,7 @@ fun DismissFlowRoute(
                         visible = true,
                         enter = fadeIn() + slideInVertically { it / 4 },
                     ) {
-                        StickyPayloadCard(
+                        StickyPayloadPanel(
                             payload = page.payload,
                             onMarkGoalComplete = { goalId ->
                                 scope.launch {
@@ -130,7 +127,7 @@ fun DismissFlowRoute(
                     }
 
                 is Page.Mood ->
-                    MoodPickCard(
+                    MoodPickPanel(
                         onPick = { score ->
                             scope.launch {
                                 repo.insertMood(score)
@@ -141,154 +138,150 @@ fun DismissFlowRoute(
             }
         }
         Text(
-            text = "进度 ${pagerState.currentPage + 1} / ${pages.size}",
+            text = "${pagerState.currentPage + 1} / ${pages.size}",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.outline,
         )
     }
 }
 
+/** 发丝描边面板：取代抬升彩色卡，生日当天只在标题色上强调 */
 @Composable
-private fun BirthdayReminderCard(card: BirthdayReminderLogic.DueCard) {
-    val highlight = card.isBirthDay
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (highlight) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    },
-            ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+private fun Panel(content: @Composable () -> Unit) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large)
+                .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        content()
+    }
+}
+
+@Composable
+private fun BirthdayReminderPanel(card: BirthdayReminderLogic.DueCard) {
+    val highlight = card.isBirthDay
+    Panel {
+        Text(
+            if (highlight) "今天生日" else "生日提醒",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            card.name,
+            style = MaterialTheme.typography.headlineSmall,
+            color =
+                if (highlight) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+        )
+        Text(card.todoText, style = MaterialTheme.typography.bodyLarge)
+        if (!highlight) {
             Text(
-                if (highlight) "今天生日 · ${card.name}" else "生日提醒 · ${card.name}",
-                style = MaterialTheme.typography.titleLarge,
+                "提前 ${card.daysBefore} 天",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(card.todoText, style = MaterialTheme.typography.bodyLarge)
-            if (!highlight) {
-                Text("提前 ${card.daysBefore} 天", style = MaterialTheme.typography.labelMedium)
-            }
         }
     }
 }
 
 @Composable
-private fun StickyPayloadCard(
+private fun StickyPayloadPanel(
     payload: AppRepository.StickyPayload,
     onMarkGoalComplete: (Long) -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-    ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                stringResource(R.string.dismiss_sticky_title),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            when (payload) {
-                is AppRepository.StickyPayload.GoalSticky -> {
-                    var marked by remember(payload.goalId) { mutableStateOf(false) }
-                    Text(payload.title, style = MaterialTheme.typography.headlineSmall)
-                    val days = payload.daysUntil
-                    if (days != null) {
-                        Text(
-                            when {
-                                days > 0 -> "距离截止还有 ${days} 天"
-                                days == 0L -> "今天是截止日"
-                                else -> "已超过截止 ${-days} 天"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.secondary,
-                        )
-                    }
-                    if (marked) {
-                        Text(
-                            stringResource(R.string.dismiss_goal_done_hint),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    } else {
-                        TextButton(
-                            onClick = {
-                                onMarkGoalComplete(payload.goalId)
-                                marked = true
-                            },
-                        ) {
-                            Text(stringResource(R.string.dismiss_goal_done))
-                        }
-                    }
-                }
-
-                is AppRepository.StickyPayload.QuoteSticky -> {
+    Panel {
+        Text(
+            stringResource(R.string.dismiss_sticky_title),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when (payload) {
+            is AppRepository.StickyPayload.GoalSticky -> {
+                var marked by remember(payload.goalId) { mutableStateOf(false) }
+                Text(payload.title, style = MaterialTheme.typography.headlineSmall)
+                val days = payload.daysUntil
+                if (days != null) {
                     Text(
-                        stringResource(R.string.sticky_pack_badge, payload.cardTheme),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        payload.packTagline,
-                        style = MaterialTheme.typography.labelMedium,
+                        when {
+                            days > 0 -> "距离截止还有 ${days} 天"
+                            days == 0L -> "今天是截止日"
+                            else -> "已超过截止 ${-days} 天"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(payload.text, style = MaterialTheme.typography.bodyLarge)
                 }
-
-                is AppRepository.StickyPayload.WeatherSticky ->
-                    Text(payload.line, style = MaterialTheme.typography.bodyMedium)
+                if (marked) {
+                    Text(
+                        stringResource(R.string.dismiss_goal_done_hint),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    TextButton(
+                        onClick = {
+                            onMarkGoalComplete(payload.goalId)
+                            marked = true
+                        },
+                    ) {
+                        Text(stringResource(R.string.dismiss_goal_done))
+                    }
+                }
             }
+
+            is AppRepository.StickyPayload.QuoteSticky -> {
+                Text(
+                    stringResource(R.string.sticky_pack_badge, payload.cardTheme),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    payload.packTagline,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(payload.text, style = MaterialTheme.typography.bodyLarge)
+            }
+
+            is AppRepository.StickyPayload.WeatherSticky ->
+                Text(payload.line, style = MaterialTheme.typography.bodyLarge)
         }
     }
 }
 
 @Composable
-private fun MoodPickCard(onPick: (Int) -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-    ) {
+private fun MoodPickPanel(onPick: (Int) -> Unit) {
+    Panel {
         Column(
-            Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Text("今天几分？", style = MaterialTheme.typography.titleMedium)
             Text(
                 stringResource(R.string.dismiss_mood_chart_hint),
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                RowButtonsRow((1..3).toList(), onPick)
-                RowButtonsRow((4..5).toList(), onPick)
-            }
-        }
-    }
-}
-
-@Composable
-private fun RowButtonsRow(
-    scores: List<Int>,
-    onPick: (Int) -> Unit,
-) {
-    androidx.compose.foundation.layout.Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        scores.forEach { s ->
-            Button(
-                onClick = { onPick(s) },
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(14.dp)),
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(s.toString())
+                (1..5).forEach { s ->
+                    OutlinedButton(
+                        onClick = { onPick(s) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(s.toString())
+                    }
+                }
             }
         }
     }

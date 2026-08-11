@@ -10,9 +10,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -31,7 +30,7 @@ import com.nierduolong.morningbell.R
 import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.data.db.MoodEntity
 import com.nierduolong.morningbell.ui.home.CompanionHomeCard
-import com.nierduolong.morningbell.ui.home.MonthlyMoodTrendCard
+import com.nierduolong.morningbell.ui.home.MonthlyMoodTrendSection
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -40,7 +39,6 @@ fun MoodRoute(
     onBack: () -> Unit,
 ) {
     val moods by repo.moodFlow.collectAsState(initial = emptyList())
-    val wakes by repo.wakeFlow.collectAsState(initial = emptyList())
 
     Scaffold(
         topBar = {
@@ -53,69 +51,75 @@ fun MoodRoute(
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
                     ),
             )
         },
     ) { padding ->
+        // 三段内容用发丝线分隔，不再各自套一张圆角卡
         LazyColumn(
             modifier =
                 Modifier
                     .fillMaxSize()
                     .padding(padding)
                     .background(MaterialTheme.colorScheme.background),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
+            item { CompanionHomeCard(moods = moods) }
             item {
-                CompanionHomeCard(wakes = wakes, moods = moods)
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 20.dp),
+                )
             }
+            item { MoodSummarySection(moods = moods) }
             item {
-                MoodSummaryCard(moods = moods)
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 20.dp),
+                )
             }
-            item {
-                MonthlyMoodTrendCard(moods = moods)
-            }
+            item { MonthlyMoodTrendSection(moods = moods) }
         }
     }
 }
 
 @Composable
-private fun MoodSummaryCard(moods: List<MoodEntity>) {
+private fun MoodSummarySection(moods: List<MoodEntity>) {
     val recent = moods.take(14)
     val avg =
         if (recent.isEmpty()) null else recent.map { it.score }.average().toFloat()
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-    ) {
-        Column(Modifier.padding(18.dp)) {
-            Text(stringResource(R.string.home_mood_title), style = MaterialTheme.typography.titleMedium)
-            if (avg == null) {
-                Text(
-                    stringResource(R.string.home_mood_empty),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Text(
-                    stringResource(R.string.home_mood_avg, avg),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { (avg / 5f).coerceIn(0f, 1f) },
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(MaterialTheme.shapes.small),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                )
-            }
+    Column {
+        Text(
+            stringResource(R.string.home_mood_title),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (avg == null) {
+            Text(
+                stringResource(R.string.home_mood_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                stringResource(R.string.home_mood_avg, avg),
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { (avg / 5f).coerceIn(0f, 1f) },
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(MaterialTheme.shapes.extraSmall),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.outlineVariant,
+            )
         }
     }
 }

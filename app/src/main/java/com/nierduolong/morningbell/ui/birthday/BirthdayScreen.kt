@@ -2,25 +2,27 @@
 
 package com.nierduolong.morningbell.ui.birthday
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -28,6 +30,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,6 +66,11 @@ fun BirthdayRoute(
                 navigationIcon = {
                     TextButton(onClick = onBack) { Text("返回") }
                 },
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
             )
         },
         floatingActionButton = {
@@ -71,8 +79,11 @@ fun BirthdayRoute(
                     editingBirthday = null
                     showBirthdayDialog = true
                 },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
             ) {
-                Text("+")
+                Icon(Icons.Filled.Add, contentDescription = null)
             }
         },
     ) { padding ->
@@ -80,19 +91,22 @@ fun BirthdayRoute(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(padding)
+                    .background(MaterialTheme.colorScheme.background),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             item {
                 Text(
                     "点某一行展开管理提醒。触发日起每日 0:00 闹钟（错过则进程恢复后自动顺延到下一次 0:00，直至生日当日结束或你在响铃页点「本周期已处理」）。",
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
                 )
-                Spacer(Modifier.height(8.dp))
             }
-            items(birthdays, key = { it.id }) { b ->
-                BirthdayCard(
+            itemsIndexed(birthdays, key = { _, b -> b.id }) { index, b ->
+                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                BirthdayRow(
                     birthday = b,
                     repo = repo,
                     onAddReminder = { reminderTarget = b },
@@ -143,7 +157,7 @@ fun BirthdayRoute(
 }
 
 @Composable
-private fun BirthdayCard(
+private fun BirthdayRow(
     birthday: BirthdayEntity,
     repo: AppRepository,
     onAddReminder: () -> Unit,
@@ -161,74 +175,72 @@ private fun BirthdayCard(
             "公历 ${birthday.month} 月 ${birthday.day} 日"
         }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-    ) {
-        Column {
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { expanded = !expanded }
-                        .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        birthday.name,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                    Text(
-                        dateLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
                 Text(
-                    if (expanded) "▼" else "▶",
-                    style = MaterialTheme.typography.bodyLarge,
+                    birthday.name,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    dateLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (expanded) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    if (reminders.isEmpty()) {
-                        Text(
-                            "暂无提醒，点击下方添加",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.outline,
-                        )
-                    } else {
-                        reminders.forEach { r ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
+            Text(
+                if (expanded) "收起" else "展开",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+        if (expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (reminders.isEmpty()) {
+                    Text(
+                        "暂无提醒，点击下方添加",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                } else {
+                    reminders.forEach { r ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "提前 ${r.daysBefore} 天 · ${r.todoText}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(
+                                onClick = {
+                                    scope.launch { repo.deleteReminder(r.id) }
+                                },
                             ) {
-                                Text(
-                                    "提前 ${r.daysBefore} 天 · ${r.todoText}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                TextButton(
-                                    onClick = {
-                                        scope.launch { repo.deleteReminder(r.id) }
-                                    },
-                                ) {
-                                    Text("删除")
-                                }
+                                Text("删除")
                             }
                         }
                     }
-                    TextButton(onClick = onAddReminder) { Text("添加提醒条目") }
-                    TextButton(onClick = onEditBirthday) { Text("编辑生日") }
-                    TextButton(onClick = onDeleteBirthday) { Text("删除此人生日") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = onAddReminder) { Text("添加提醒") }
+                    TextButton(onClick = onEditBirthday) { Text("编辑") }
+                    TextButton(onClick = onDeleteBirthday) { Text("删除") }
                 }
             }
         }

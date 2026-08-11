@@ -1,5 +1,6 @@
 package com.nierduolong.morningbell.ui.goals
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -8,14 +9,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -23,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -34,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.nierduolong.morningbell.R
 import com.nierduolong.morningbell.data.AppRepository
@@ -61,11 +67,21 @@ fun GoalsRoute(
                 navigationIcon = {
                     TextButton(onClick = onBack) { Text(stringResource(R.string.goals_back)) }
                 },
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAdd = true }) {
-                Text("+")
+            FloatingActionButton(
+                onClick = { showAdd = true },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
             }
         },
     ) { padding ->
@@ -73,19 +89,22 @@ fun GoalsRoute(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(padding)
+                    .background(MaterialTheme.colorScheme.background),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             item {
                 Text(
                     stringResource(R.string.goals_intro),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
-            items(goals, key = { it.id }) { g ->
-                GoalRowCard(
+            itemsIndexed(goals, key = { _, g -> g.id }) { index, g ->
+                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                GoalRow(
                     goal = g,
                     onToggleDone = { done ->
                         scope.launch { repo.setGoalCompleted(g.id, done) }
@@ -118,7 +137,7 @@ fun GoalsRoute(
 }
 
 @Composable
-private fun GoalRowCard(
+private fun GoalRow(
     goal: GoalEntity,
     onToggleDone: (Boolean) -> Unit,
     onDelete: () -> Unit,
@@ -147,20 +166,25 @@ private fun GoalRowCard(
         )
     }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (goal.completed) {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    } else {
-                        MaterialTheme.colorScheme.surface
-                    },
-            ),
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(goal.title, style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(
+                goal.title,
+                style = MaterialTheme.typography.titleMedium,
+                color =
+                    if (goal.completed) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                textDecoration = if (goal.completed) TextDecoration.LineThrough else null,
+            )
             val deadlineStr =
                 goal.deadlineEpochDay?.let { ed ->
                     val d = LocalDate.ofEpochDay(ed)
@@ -171,23 +195,14 @@ private fun GoalRowCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+            TextButton(
+                onClick = { confirmDelete = true },
+                modifier = Modifier.padding(top = 2.dp),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.goals_completed_switch))
-                    Switch(
-                        checked = goal.completed,
-                        onCheckedChange = onToggleDone,
-                    )
-                }
-                TextButton(onClick = { confirmDelete = true }) {
-                    Text(stringResource(R.string.goals_delete))
-                }
+                Text(stringResource(R.string.goals_delete))
             }
         }
+        Switch(checked = goal.completed, onCheckedChange = onToggleDone)
     }
 }
 

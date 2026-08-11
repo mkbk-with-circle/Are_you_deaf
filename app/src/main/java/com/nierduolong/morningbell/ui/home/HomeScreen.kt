@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,14 +26,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -55,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.nierduolong.morningbell.core.AlarmTimeCalculator
@@ -71,7 +73,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun HomeRoute(
     repo: AppRepository,
-    onOpenSettings: () -> Unit,
     onOpenMood: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -94,6 +95,8 @@ fun HomeRoute(
     var editing by remember { mutableStateOf<AlarmEntity?>(null) }
     var editingChainGroupId by remember { mutableStateOf<Long?>(null) }
 
+    // 顶栏用纯表面色、不加薄荷容器底：彩色 AppBar 是 Material 样例的标志性长相
+    // 「设置」已在底部「我的」Tab，这里只留心情入口
     Scaffold(
         topBar = {
             TopAppBar(
@@ -105,25 +108,22 @@ fun HomeRoute(
                 },
                 colors =
                     TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                        titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
                     ),
                 actions = {
                     TextButton(onClick = onOpenMood) { Text(stringResource(R.string.nav_mood)) }
-                    TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.nav_settings)) }
                 },
             )
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = {
-                    showTypePicker = true
-                },
+                onClick = { showTypePicker = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 5.dp),
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 2.dp),
             ) {
-                Text("+", style = MaterialTheme.typography.titleLarge)
+                Icon(Icons.Filled.Add, contentDescription = null)
             }
         },
     ) { padding ->
@@ -133,8 +133,9 @@ fun HomeRoute(
                     .fillMaxSize()
                     .padding(padding)
                     .background(MaterialTheme.colorScheme.background),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            // 底部留出 FAB 的高度，否则最后一条闹钟会被悬浮按钮压住
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 88.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             if (alarms.isEmpty() && chainUi.isEmpty()) {
                 item {
@@ -146,7 +147,9 @@ fun HomeRoute(
                     )
                 }
             }
-            items(alarms, key = { it.id }) { alarm ->
+            // 分隔线画在行与行之间，不画在列表末尾——收尾那一条会显得断掉
+            itemsIndexed(alarms, key = { _, a -> a.id }) { index, alarm ->
+                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 AlarmCard(
                     alarm = alarm,
                     defaultRingtoneLabel = stringResource(R.string.ringtone_default),
@@ -167,9 +170,9 @@ fun HomeRoute(
             item {
                 Text(
                     stringResource(R.string.chain_alarm_section),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 8.dp),
                 )
             }
             if (chainUi.isEmpty()) {
@@ -182,7 +185,8 @@ fun HomeRoute(
                     )
                 }
             } else {
-                items(chainUi, key = { it.group.id }) { row ->
+                itemsIndexed(chainUi, key = { _, r -> r.group.id }) { index, row ->
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     ChainAlarmCard(
                         row = row,
                         defaultRingtoneLabel = stringResource(R.string.ringtone_default),
@@ -310,30 +314,25 @@ private fun ChainAlarmCard(
         )
     }
 
-    Card(
+    // 列表行之间已有发丝分隔线，再套一层抬升卡片就是双重容器；
+    // 扁平行 + 分隔线是设置类列表本来的样子
+    Row(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = onEdit,
                     onLongClick = { showDeleteConfirm = true },
-                ),
-        shape = MaterialTheme.shapes.extraLarge,
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                ).padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.padding(18.dp)) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(
                 stringResource(
                     R.string.chain_alarm_steps_label,
                     row.steps.size,
                 ),
                 style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                "铃声：" +
-                    AudioPickerUtils.ringtoneSummary(ctx, g.soundUri, defaultRingtoneLabel),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
             )
             row.steps.forEach { s ->
                 Text(
@@ -354,21 +353,25 @@ private fun ChainAlarmCard(
                         },
                     ),
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Text(
+                AudioPickerUtils.ringtoneSummary(ctx, g.soundUri, defaultRingtoneLabel),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (g.note.isNotBlank()) {
-                Text(g.note, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.home_alarm_enable), style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = g.enabled, onCheckedChange = onToggle)
+                Text(
+                    g.note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
+        Switch(checked = g.enabled, onCheckedChange = onToggle)
     }
 }
 
@@ -406,41 +409,38 @@ private fun AlarmCard(
         )
     }
 
-    Card(
+    // 时间是这一行唯一要一眼看到的东西，放大到 headline；其余降为次级灰字
+    Row(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = onEdit,
                     onLongClick = { showDeleteConfirm = true },
-                ),
-        shape = MaterialTheme.shapes.extraLarge,
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                ).padding(vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.padding(18.dp)) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(
-                "%02d:%02d · %s".format(alarm.hour, alarm.minute, if (alarm.silent) "无声" else "有声"),
-                style = MaterialTheme.typography.titleMedium,
+                "%02d:%02d".format(alarm.hour, alarm.minute),
+                style = MaterialTheme.typography.headlineSmall,
             )
             Text(
-                "铃声：" +
-                    AudioPickerUtils.ringtoneSummary(ctx, alarm.soundUri, defaultRingtoneLabel),
+                AudioPickerUtils.ringtoneSummary(ctx, alarm.soundUri, defaultRingtoneLabel),
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (alarm.note.isNotBlank()) {
-                Text(alarm.note, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.home_alarm_enable), style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = alarm.enabled, onCheckedChange = onToggle)
+                Text(
+                    alarm.note,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
+        Switch(checked = alarm.enabled, onCheckedChange = onToggle)
     }
 }
 
