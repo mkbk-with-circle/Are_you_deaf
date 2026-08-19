@@ -69,7 +69,9 @@ tasks.register("cleanBaiduyunSyncArtifacts") {
         // build/intermediates，继续交给 D8 会变成 “Type is defined multiple times”。严格限定
         // 在生成目录和生成后缀内清理，不扫描或改动任何源码/资源文件。
         val generatedRoot = layout.buildDirectory.dir("intermediates").get().asFile
-        val conflictCopy = Regex(".+ \\d+\\.(dex|class|jar)$")
+        // Android 生成物合法文件名不会包含“空格 + 冲突序号”；同步盘既可能复制 dex，
+        // 也可能复制 backup_rules.xml 等打包资源，所以不再硬编码扩展名。
+        val conflictCopy = Regex(".+ \\d+(\\.[^.]+)+$")
         if (generatedRoot.isDirectory) {
             generatedRoot.walkTopDown().forEach { file ->
                 if (file.isFile && conflictCopy.matches(file.name) && file.delete()) removed++
