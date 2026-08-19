@@ -1,5 +1,7 @@
 package com.nierduolong.morningbell.transfer
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -29,6 +31,16 @@ class NearbyFileShareServerTest {
         try {
             val wrong = request(server.port, "GET /s/wrong/_api/list HTTP/1.1\r\nHost: localhost\r\n\r\n")
             assertEquals(404, wrong.status)
+
+            val gallery = request(server.port, "GET /s/$token/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            val galleryHtml = String(gallery.body)
+            assertEquals(200, gallery.status)
+            assertTrue(galleryHtml.contains("网格只按需加载 320px 缩略图"))
+            assertTrue(galleryHtml.contains("value=\"mid\" selected"))
+            assertTrue(galleryHtml.contains("im.loading='lazy'"))
+            assertTrue(galleryHtml.contains("{thumb:1}"))
+            assertTrue(galleryHtml.contains("downloadOriginal"))
+            assertTrue(galleryHtml.contains("fileUrl(window.current,{download:1})"))
 
             val listing = request(server.port, "GET /s/$token/_api/list HTTP/1.1\r\nHost: localhost\r\n\r\n")
             assertEquals(200, listing.status)
@@ -112,6 +124,53 @@ class NearbyFileShareServerTest {
         }
     }
 
+    @Test
+    fun servesSmallGalleryImagesAndKeepsOriginalForExplicitDownload() {
+        val sourceBitmap = Bitmap.createBitmap(1600, 1200, Bitmap.Config.RGB_565).apply {
+            eraseColor(0xff4b8f72.toInt())
+        }
+        val encoded = ByteArrayOutputStream().also { output ->
+            assertTrue(sourceBitmap.compress(Bitmap.CompressFormat.JPEG, 90, output))
+        }.toByteArray()
+        sourceBitmap.recycle()
+        val token = "abcdefghijklmnopqrstuvwxyz123456"
+        val server = NearbyFileShareServer(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            MemoryCatalog(encoded, fileName = "camera.jpg", mimeType = "image/jpeg"),
+            token,
+            NoopListener,
+        )
+        server.start()
+        try {
+            val thumbnail = request(
+                server.port,
+                "GET /s/$token/file/camera.jpg?thumb=1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            val preview = request(
+                server.port,
+                "GET /s/$token/file/camera.jpg?q=mid HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            val original = request(
+                server.port,
+                "GET /s/$token/file/camera.jpg?download=1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            )
+            assertEquals(200, thumbnail.status)
+            assertEquals(200, preview.status)
+            assertEquals(200, original.status)
+            assertTrue(imageMaxEdge(thumbnail.body) <= 320)
+            assertTrue(imageMaxEdge(preview.body) in 321..1280)
+            assertTrue(original.body.contentEquals(encoded))
+        } finally {
+            server.close()
+        }
+    }
+
+    private fun imageMaxEdge(bytes: ByteArray): Int {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        return maxOf(options.outWidth, options.outHeight)
+    }
+
     private fun request(port: Int, request: String): Response {
         Socket("127.0.0.1", port).use { socket ->
             socket.soTimeout = 15_000
@@ -156,22 +215,24 @@ class NearbyFileShareServerTest {
     private class MemoryCatalog(
         private val bytes: ByteArray,
         override val removable: Boolean = false,
+        private val fileName: String = "camera.bin",
+        private val mimeType: String = "application/octet-stream",
     ) : TransferSourceCatalog {
         override val label = "memory"
         override fun isReadable() = true
         override fun list(relativePath: String) = if (relativePath.isBlank()) {
-            listOf(TransferListItem("camera.bin", "camera.bin", bytes.size.toLong(), 1L, "application/octet-stream", "file"))
+            listOf(TransferListItem(fileName, fileName, bytes.size.toLong(), 1L, mimeType, TransferMime.kindFor(fileName, mimeType)))
         } else {
             emptyList()
         }
 
         override fun resolveFile(relativePath: String): TransferReadableEntry? =
-            if (relativePath != "camera.bin") null else TransferReadableEntry(
-                path = "camera.bin",
+            if (relativePath != fileName) null else TransferReadableEntry(
+                path = fileName,
                 size = bytes.size.toLong(),
                 lastModified = 1L,
-                mimeType = "application/octet-stream",
-                etagSeed = "memory-${bytes.size}",
+                mimeType = mimeType,
+                etagSeed = "memory-$fileName-${bytes.size}",
                 openAt = { offset -> ByteArrayInputStream(bytes, offset.toInt(), bytes.size - offset.toInt()) },
             )
     }
