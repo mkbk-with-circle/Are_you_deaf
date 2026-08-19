@@ -164,16 +164,11 @@ class AlarmRingService : Service() {
         pattern: LongArray,
         repeatFromIndex: Int,
     ) {
-        val v = getSystemService(VIBRATOR_SERVICE) as? Vibrator ?: return
+        val v = getSystemService(Vibrator::class.java) ?: return
         vibrator = v
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            v.vibrate(
-                VibrationEffect.createWaveform(pattern, repeatFromIndex),
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            v.vibrate(pattern, repeatFromIndex)
-        }
+        v.vibrate(
+            VibrationEffect.createWaveform(pattern, repeatFromIndex),
+        )
     }
 
     private fun stopRingingInternal() {
@@ -197,7 +192,6 @@ class AlarmRingService : Service() {
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val mgr = getSystemService(NotificationManager::class.java)
         val ch =
             NotificationChannel(

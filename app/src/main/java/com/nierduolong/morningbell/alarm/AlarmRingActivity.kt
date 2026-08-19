@@ -169,19 +169,17 @@ class AlarmRingActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            km.requestDismissKeyguard(
-                this,
-                object : KeyguardManager.KeyguardDismissCallback() {
-                    override fun onDismissError() {}
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        km.requestDismissKeyguard(
+            this,
+            object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissError() {}
 
-                    override fun onDismissSucceeded() {}
+                override fun onDismissSucceeded() {}
 
-                    override fun onDismissCancelled() {}
-                },
-            )
-        }
+                override fun onDismissCancelled() {}
+            },
+        )
     }
 
     private fun stopRinging() {
