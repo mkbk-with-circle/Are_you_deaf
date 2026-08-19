@@ -4,6 +4,7 @@ import android.app.Application
 import com.nierduolong.morningbell.core.CrashLogger
 import com.nierduolong.morningbell.dailylog.DailyCompileManager
 import com.nierduolong.morningbell.dailylog.DailyCompileWorker
+import com.nierduolong.morningbell.dailylog.ThumbnailStore
 import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.data.db.AppDatabase
 import kotlinx.coroutines.CoroutineScope
@@ -46,5 +47,16 @@ class MorningBellApp : Application() {
             DailyCompileManager.compileYesterdayIfNeeded(this@MorningBellApp, repository, logId)
             runCatching { repository.applyRetentionPolicy() }
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        ThumbnailStore.onTrimMemory(level)
+    }
+
+    @Deprecated("Android framework callback")
+    override fun onLowMemory() {
+        ThumbnailStore.clearMemoryCache()
+        super.onLowMemory()
     }
 }

@@ -12,6 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,7 +36,7 @@ import java.util.Locale
  */
 @Composable
 fun rememberTodayEpochDay(): Long {
-    var today by remember { mutableStateOf(LocalDate.now().toEpochDay()) }
+    var today by remember { mutableLongStateOf(LocalDate.now().toEpochDay()) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000)
@@ -62,11 +63,12 @@ fun formatDayShort(dayEpoch: Long): String = DateTimeFormatter.ofPattern("M/d").
 fun VideoThumbnail(
     path: String,
     modifier: Modifier = Modifier,
+    thumbnailPath: String? = null,
     durationMs: Long? = null,
 ) {
     val context = LocalContext.current
-    var bitmap by remember(path) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(path) { bitmap = ThumbnailStore.load(context, path) }
+    var bitmap by remember(path, thumbnailPath) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(path, thumbnailPath) { bitmap = ThumbnailStore.load(context, path, thumbnailPath) }
 
     Box(modifier.background(MaterialTheme.colorScheme.surfaceVariant)) {
         bitmap?.let {

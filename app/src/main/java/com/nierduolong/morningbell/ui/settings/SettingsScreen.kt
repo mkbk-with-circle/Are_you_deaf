@@ -45,6 +45,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,7 +53,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -62,8 +62,10 @@ import com.nierduolong.morningbell.core.DailyLogStats
 import com.nierduolong.morningbell.core.RetentionPolicy
 import com.nierduolong.morningbell.core.StickyThemeRegistry
 import com.nierduolong.morningbell.data.AppRepository
+import com.nierduolong.morningbell.dailylog.DailyLogStorage
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,13 +74,14 @@ fun SettingsRoute(
     repo: AppRepository,
     onOpenGoals: () -> Unit,
     onOpenBirthdays: () -> Unit,
+    onOpenNearbyTransfer: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val stickyThemePackId by repo.stickyThemePackIdFlow.collectAsState()
     val nickname by repo.nicknameFlow.collectAsState()
 
     // 从系统设置返回或权限弹窗结束后重算「是否仍需要权限区块」
-    var permissionStateEpoch by remember { mutableStateOf(0) }
+    var permissionStateEpoch by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val permissionAttentionNeeded =
         remember(permissionStateEpoch, context) {
@@ -87,7 +90,7 @@ fun SettingsRoute(
     val bumpPermissionState: () -> Unit = {
         permissionStateEpoch += 1
     }
-    var crashStateEpoch by remember { mutableStateOf(0) }
+    var crashStateEpoch by remember { mutableIntStateOf(0) }
     val crashReportCount =
         remember(crashStateEpoch, context) { CrashLogger.recentReports(context).size }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -130,6 +133,8 @@ fun SettingsRoute(
             item { NavRow(stringResource(R.string.goals_title_short), onOpenGoals) }
             item { Hairline() }
             item { NavRow(stringResource(R.string.birthday_nav_short), onOpenBirthdays) }
+            item { Hairline() }
+            item { NavRow("附近快传", onOpenNearbyTransfer) }
 
             item { SectionLabel(stringResource(R.string.settings_section_profile)) }
             item {
@@ -281,12 +286,12 @@ private fun DiagnosticsSection(
 private fun DailyLogStorageSection(repo: AppRepository) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var bytes by remember { mutableStateOf<Long?>(null) }
-    var refreshEpoch by remember { mutableStateOf(0) }
+    var usage by remember { mutableStateOf<DailyLogStorage.StorageBreakdown?>(null) }
+    var refreshEpoch by remember { mutableIntStateOf(0) }
     val retentionDays by repo.retentionDaysFlow.collectAsState()
 
     LaunchedEffect(refreshEpoch) {
-        bytes = repo.dailyLogOccupiedBytes()
+        usage = repo.dailyLogStorageBreakdown()
     }
 
     Column {
@@ -295,24 +300,58 @@ private fun DailyLogStorageSection(repo: AppRepository) {
             Text(
                 stringResource(
                     R.string.dailylog_storage_usage_fmt,
-                    bytes?.let { DailyLogStats.formatBytes(it) } ?: "…",
+                    usage?.let { DailyLogStats.formatBytes(it.totalBytes) } ?: "…",
                 ),
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = {
                 scope.launch {
-                    repo.clearDailyLogThumbnailCache()
-                    repo.pruneOrphanDailyLogFiles()
+                    val result = repo.clearDailyLogSafeCache()
                     refreshEpoch += 1
                     Toast.makeText(
                         context,
-                        context.getString(R.string.dailylog_storage_cleared),
+                        if (result.freedBytes > 0) {
+                            "已安全释放 ${DailyLogStats.formatBytes(result.freedBytes)}"
+                        } else {
+                            "没有可安全清理的文件"
+                        },
                         Toast.LENGTH_SHORT,
                     ).show()
                 }
             }) {
-                Text(stringResource(R.string.dailylog_storage_clear_cache))
+                Text("安全清理")
+            }
+        }
+
+        usage?.let { value ->
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                StorageUsageRow("本机原始视频", value.originalBytes)
+                StorageUsageRow("每日合成", value.compilationBytes)
+                StorageUsageRow("可重建缩略图", value.thumbnailBytes)
+                StorageUsageRow("临时与其他文件", value.temporaryBytes + value.otherBytes)
+            }
+            Text(
+                "可用空间 ${DailyLogStats.formatBytes(value.usableBytes)}",
+                style = MaterialTheme.typography.bodySmall,
+                color =
+                    if (value.usableBytes <= DailyLogStorage.MIN_FREE_BYTES) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
+            if (value.usableBytes <= DailyLogStorage.MIN_FREE_BYTES) {
+                Text(
+                    "空间不足，拍摄已暂停。请先清理缓存，或确认已有合成后清理往期原片。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 10.dp),
+                )
             }
         }
 
@@ -362,6 +401,17 @@ private fun DailyLogStorageSection(repo: AppRepository) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun StorageUsageRow(
+    label: String,
+    bytes: Long,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(DailyLogStats.formatBytes(bytes), style = MaterialTheme.typography.bodySmall)
     }
 }
 

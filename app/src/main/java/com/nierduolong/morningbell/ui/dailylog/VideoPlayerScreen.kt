@@ -1,3 +1,5 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.nierduolong.morningbell.ui.dailylog
 
 import androidx.compose.foundation.background
@@ -27,6 +29,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,9 +42,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.nierduolong.morningbell.core.DailyLogStats
+import com.nierduolong.morningbell.dailylog.lan.LanVideoDataSource
+import com.nierduolong.morningbell.dailylog.lan.LanVideoReference
 import com.nierduolong.morningbell.ui.theme.MediaTokens
 import kotlinx.coroutines.delay
 import java.io.File
@@ -51,7 +59,12 @@ import java.io.File
  * 单人本地场景直接用进程内单例传递，配合空列表兜底即可。
  */
 object PlaybackQueue {
-    var paths: List<String> = emptyList()
+    sealed interface Item {
+        data class Local(val path: String) : Item
+        data class Remote(val reference: LanVideoReference) : Item
+    }
+
+    var items: List<Item> = emptyList()
         private set
     var title: String = ""
         private set
@@ -60,12 +73,20 @@ object PlaybackQueue {
         paths: List<String>,
         title: String,
     ) {
-        this.paths = paths.filter { File(it).exists() }
+        this.items = paths.filter { File(it).isFile }.map(Item::Local)
+        this.title = title
+    }
+
+    fun setItems(
+        items: List<Item>,
+        title: String,
+    ) {
+        this.items = items.filter { it is Item.Remote || File((it as Item.Local).path).isFile }
         this.title = title
     }
 
     fun clear() {
-        paths = emptyList()
+        items = emptyList()
         title = ""
     }
 }
@@ -77,10 +98,10 @@ object PlaybackQueue {
 @Composable
 fun VideoPlayerRoute(onBack: () -> Unit) {
     val context = LocalContext.current
-    val paths = remember { PlaybackQueue.paths }
+    val items = remember { PlaybackQueue.items }
     val title = remember { PlaybackQueue.title }
 
-    if (paths.isEmpty()) {
+    if (items.isEmpty()) {
         LaunchedEffect(Unit) { onBack() }
         return
     }
@@ -88,20 +109,46 @@ fun VideoPlayerRoute(onBack: () -> Unit) {
     // 变量名刻意不叫 player：PlayerView 自身有同名属性，在 apply 块里会把外层变量遮蔽掉
     val exoPlayer =
         remember {
-            ExoPlayer.Builder(context).build().apply {
-                setMediaItems(paths.map { MediaItem.fromUri(File(it).toURI().toString()) })
+            val remoteReferences = items.filterIsInstance<PlaybackQueue.Item.Remote>().associate { it.reference.uri to it.reference }
+            val upstream = LanVideoDataSource.Factory(remoteReferences)
+            val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstream))
+            val loadControl =
+                DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(
+                        3_000,
+                        15_000,
+                        500,
+                        1_000,
+                    ).setBackBuffer(0, false)
+                    .build()
+            ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl)
+                .build()
+                .apply {
+                setMediaItems(
+                    items.map {
+                        when (it) {
+                            is PlaybackQueue.Item.Local -> MediaItem.fromUri(File(it.path).toURI().toString())
+                            is PlaybackQueue.Item.Remote -> MediaItem.fromUri(it.reference.uri)
+                        }
+                    },
+                )
                 repeatMode = Player.REPEAT_MODE_OFF
                 prepare()
                 playWhenReady = true
             }
         }
     DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
+        onDispose {
+            exoPlayer.release()
+            PlaybackQueue.clear()
+        }
     }
 
     var isPlaying by remember { mutableStateOf(true) }
-    var positionMs by remember { mutableStateOf(0L) }
-    var durationMs by remember { mutableStateOf(0L) }
+    var positionMs by remember { mutableLongStateOf(0L) }
+    var durationMs by remember { mutableLongStateOf(0L) }
     var progress by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(exoPlayer) {

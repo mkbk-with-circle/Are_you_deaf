@@ -23,9 +23,12 @@ import com.nierduolong.morningbell.BuildConfig
         LogClipEntity::class,
         DailyCompilationEntity::class,
         LogCommentEntity::class,
+        LogMemberEntity::class,
+        SyncOutboxEntity::class,
+        SyncEventEntity::class,
     ],
-    version = 10,
-    exportSchema = false,
+    version = 11,
+    exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun alarmDao(): AlarmDao
@@ -209,6 +212,90 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
+        /**
+         * 附近多人 Log 的本地优先模型。视频文件仍留在文件系统；Room 只记录身份、
+         * 传输状态、幂等操作与主机事件游标，因此数据库迁移本身不会复制任何大文件。
+         */
+        internal val MIGRATION_10_11 =
+            object : Migration(10, 11) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN remoteId TEXT")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN role TEXT NOT NULL DEFAULT 'personal'")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN hostDeviceId TEXT")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN memberCount INTEGER NOT NULL DEFAULT 1")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN lastSyncCursor INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN lastSyncedAt INTEGER")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN lastHostAddress TEXT")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN lastHostPort INTEGER")
+                    db.execSQL("ALTER TABLE daily_logs ADD COLUMN lastHostServiceName TEXT")
+
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN clientUuid TEXT")
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN remoteId TEXT")
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN authorId TEXT")
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN localThumbPath TEXT")
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN transferState TEXT NOT NULL DEFAULT 'local'")
+                    db.execSQL("ALTER TABLE log_clips ADD COLUMN contentSha256 TEXT")
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_log_clips_logId_clientUuid` " +
+                            "ON `log_clips` (`logId`, `clientUuid`)",
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_log_clips_logId_remoteId` " +
+                            "ON `log_clips` (`logId`, `remoteId`)",
+                    )
+
+                    db.execSQL("ALTER TABLE log_comments ADD COLUMN clientUuid TEXT")
+                    db.execSQL("ALTER TABLE log_comments ADD COLUMN remoteId TEXT")
+                    db.execSQL("ALTER TABLE log_comments ADD COLUMN authorId TEXT")
+                    db.execSQL("ALTER TABLE log_comments ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_log_comments_clientUuid` " +
+                            "ON `log_comments` (`clientUuid`)",
+                    )
+
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `log_members` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                            "`logId` INTEGER NOT NULL, `authorId` TEXT NOT NULL, " +
+                            "`nickname` TEXT NOT NULL, `publicKey` TEXT NOT NULL, " +
+                            "`avatarSeed` TEXT NOT NULL, `sourceAddress` TEXT, `sourcePort` INTEGER, " +
+                            "`joinedAt` INTEGER NOT NULL, " +
+                            "`lastSeenAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_log_members_logId_authorId` " +
+                            "ON `log_members` (`logId`, `authorId`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `sync_outbox` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `logId` INTEGER NOT NULL, " +
+                            "`operationId` TEXT NOT NULL, `entityType` TEXT NOT NULL, " +
+                            "`entityClientUuid` TEXT NOT NULL, `operation` TEXT NOT NULL, " +
+                            "`payloadJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                            "`attempts` INTEGER NOT NULL, `nextAttemptAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_sync_outbox_operationId` " +
+                            "ON `sync_outbox` (`operationId`)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_sync_outbox_logId_nextAttemptAt` " +
+                            "ON `sync_outbox` (`logId`, `nextAttemptAt`)",
+                    )
+                    db.execSQL(
+                        "CREATE TABLE IF NOT EXISTS `sync_events` (" +
+                            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `logId` INTEGER NOT NULL, " +
+                            "`operationId` TEXT NOT NULL, `entityType` TEXT NOT NULL, " +
+                            "`operation` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, " +
+                            "`createdAt` INTEGER NOT NULL)",
+                    )
+                    db.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_sync_events_logId_id` " +
+                            "ON `sync_events` (`logId`, `id`)",
+                    )
+                }
+            }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "morning_bell.db")
                 .addMigrations(
@@ -221,6 +308,7 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_7_8,
                     MIGRATION_8_9,
                     MIGRATION_9_10,
+                    MIGRATION_10_11,
                 )
                 .apply {
                     // 推平重建只在开发期允许。正式包里漏写一次迁移就会静默清空用户

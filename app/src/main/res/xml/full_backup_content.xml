@@ -2,4 +2,5 @@
 <!-- Android 11 及更早的备份规则，与 backup_rules.xml 保持一致 -->
 <full-backup-content>
     <exclude domain="external" path="dailylog/" />
+    <exclude domain="sharedpref" path="nearby_transfer_session.xml" />
 </full-backup-content>

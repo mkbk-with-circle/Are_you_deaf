@@ -53,6 +53,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -62,15 +64,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nierduolong.morningbell.R
+import com.nierduolong.morningbell.MorningBellApp
 import com.nierduolong.morningbell.core.DailyLogStats
 import com.nierduolong.morningbell.dailylog.DailyLogStorage
 import com.nierduolong.morningbell.dailylog.ThumbnailStore
+import com.nierduolong.morningbell.dailylog.lan.NearbySyncManager
 import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.ui.theme.MediaTokens
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +95,7 @@ fun CaptureRoute(
     onDone: () -> Unit,
 ) {
     val context = LocalContext.current
+    val app = context.applicationContext as MorningBellApp
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
@@ -132,14 +137,14 @@ fun CaptureRoute(
     }
 
     var isRecording by remember { mutableStateOf(false) }
-    var recordingStartedAt by remember { mutableStateOf(0L) }
-    var elapsedMs by remember { mutableStateOf(0L) }
+    var recordingStartedAt by remember { mutableLongStateOf(0L) }
+    var elapsedMs by remember { mutableLongStateOf(0L) }
     var currentRecording by remember { mutableStateOf<Recording?>(null) }
     var pendingFile by remember { mutableStateOf<File?>(null) }
-    var pendingDayEpoch by remember { mutableStateOf(0L) }
-    var pendingDurationMs by remember { mutableStateOf(0L) }
+    var pendingDayEpoch by remember { mutableLongStateOf(0L) }
+    var pendingDurationMs by remember { mutableLongStateOf(0L) }
     var caption by remember { mutableStateOf("") }
-    var lensFacing by remember { mutableStateOf(CameraSelector.LENS_FACING_BACK) }
+    var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
 
     LaunchedEffect(isRecording, recordingStartedAt) {
         while (isRecording) {
@@ -210,7 +215,7 @@ fun CaptureRoute(
         // 归到「按下录制那一刻」的日期：用结束时刻会让跨零点的录制落到第二天，
         // 与文件所在的日期目录不一致
         val dayEpoch = LocalDate.now().toEpochDay()
-        val outputFile = DailyLogStorage.newClipFile(context, dayEpoch)
+        val outputFile = DailyLogStorage.newClipFile(context, logId.coerceAtLeast(0L), dayEpoch)
         val options = FileOutputOptions.Builder(outputFile).build()
         val started =
             runCatching {
@@ -339,7 +344,10 @@ fun CaptureRoute(
             // 关掉弹窗不该丢素材：默认按「不加说明」保存，只有显式点删除才丢
             onSave = {
                 scope.launch {
-                    saveClip(repo, logId, fileToSave, pendingDayEpoch, pendingDurationMs, caption)
+                    val saved = saveClip(repo, logId, fileToSave, pendingDayEpoch, pendingDurationMs, caption)
+                    app.appScope.launch {
+                        runCatching { NearbySyncManager.publishAndPullDay(context, repo, saved.first, saved.second) }
+                    }
                     pendingFile = null
                     caption = ""
                     onDone()
@@ -363,7 +371,7 @@ private suspend fun saveClip(
     dayEpoch: Long,
     durationMs: Long,
     caption: String,
-) {
+): Pair<Long, Long> {
     val effectiveLogId = if (logId > 0) logId else repo.ensurePersonalDailyLog()
     val duration = if (durationMs > 0) durationMs else ThumbnailStore.durationMs(file.absolutePath)
     repo.insertLogClip(
@@ -373,6 +381,7 @@ private suspend fun saveClip(
         caption = caption,
         dayEpoch = dayEpoch,
     )
+    return effectiveLogId to dayEpoch
 }
 
 @Composable

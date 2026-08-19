@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,7 +49,7 @@ fun OnboardingRoute(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var step by remember { mutableStateOf(0) }
+    var step by remember { mutableIntStateOf(0) }
     var name by remember { mutableStateOf("") }
 
     fun granted(permission: String) =
@@ -61,6 +62,13 @@ fun OnboardingRoute(
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || granted(Manifest.permission.POST_NOTIFICATIONS),
         )
     }
+    val nearbyPermission =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+    var nearbyGranted by remember { mutableStateOf(granted(nearbyPermission)) }
 
     val captureLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -70,6 +78,10 @@ fun OnboardingRoute(
     val notifyLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
             notifyGranted = ok
+        }
+    val nearbyLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+            nearbyGranted = ok
         }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -138,6 +150,12 @@ fun OnboardingRoute(
                             notifyLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
                     },
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                PermissionRow(
+                    title = stringResource(R.string.onboarding_permission_nearby),
+                    granted = nearbyGranted,
+                    onRequest = { nearbyLauncher.launch(nearbyPermission) },
                 )
                 Spacer(Modifier.weight(1f))
                 Button(

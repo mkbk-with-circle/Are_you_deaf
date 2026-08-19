@@ -1,11 +1,18 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.nierduolong.morningbell.dailylog
 
 import android.content.Context
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
+import androidx.media3.common.util.Clock
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.DefaultDecoderFactory
+import androidx.media3.transformer.ExoPlayerAssetLoader
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
@@ -19,6 +26,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.nierduolong.morningbell.dailylog.lan.LanVideoDataSource
+import com.nierduolong.morningbell.dailylog.lan.LanVideoReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -29,6 +38,11 @@ import kotlin.coroutines.resumeWithException
 object DailyCompiler {
     private const val PROGRESS_POLL_MS = 250L
 
+    sealed interface Input {
+        data class Local(val file: File) : Input
+        data class Remote(val reference: LanVideoReference) : Input
+    }
+
     /**
      * 必须在带 Looper 的线程调用（这里切到主线程），[outputFile] 已存在会被覆盖。
      *
@@ -37,20 +51,20 @@ object DailyCompiler {
      */
     suspend fun compile(
         context: Context,
-        clipFilePaths: List<String>,
+        inputs: List<Input>,
         outputFile: File,
         onProgress: (Float) -> Unit = {},
     ): File {
-        val existing = clipFilePaths.filter { File(it).exists() }
-        require(existing.isNotEmpty()) { "没有可合成的素材" }
+        val available = inputs.filter { it is Input.Remote || (it as Input.Local).file.isFile }
+        require(available.isNotEmpty()) { "没有可合成的素材" }
         outputFile.parentFile?.mkdirs()
         val temp = File(outputFile.parentFile, "${outputFile.name}.tmp")
         if (temp.exists()) temp.delete()
 
         // 单条素材直接拷贝：省掉一次全量转码，画质也不会被二次压缩
-        if (existing.size == 1) {
+        if (available.size == 1 && available.first() is Input.Local) {
             withContext(Dispatchers.IO) {
-                File(existing[0]).copyTo(temp, overwrite = true)
+                (available.first() as Input.Local).file.copyTo(temp, overwrite = true)
                 promote(temp, outputFile)
             }
             onProgress(1f)
@@ -58,15 +72,32 @@ object DailyCompiler {
         }
 
         return withContext(Dispatchers.Main.immediate) {
+            val remoteReferences = available.filterIsInstance<Input.Remote>().associate { it.reference.uri to it.reference }
             val items =
-                existing.map { path ->
-                    EditedMediaItem.Builder(MediaItem.fromUri(File(path).toUri())).build()
+                available.map { input ->
+                    val mediaItem =
+                        when (input) {
+                            is Input.Local -> MediaItem.fromUri(input.file.toUri())
+                            is Input.Remote -> MediaItem.fromUri(input.reference.uri)
+                        }
+                    EditedMediaItem.Builder(mediaItem).build()
                 }
             val sequence = EditedMediaItemSequence(items)
             val composition = Composition.Builder(listOf(sequence)).build()
-            val transformer =
-                Transformer.Builder(context)
-                    .build()
+            val builder = Transformer.Builder(context)
+            if (remoteReferences.isNotEmpty()) {
+                val upstream = LanVideoDataSource.Factory(remoteReferences)
+                val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstream))
+                builder.setAssetLoaderFactory(
+                    ExoPlayerAssetLoader.Factory(
+                        context,
+                        DefaultDecoderFactory.Builder(context).build(),
+                        Clock.DEFAULT,
+                        mediaSourceFactory,
+                    ),
+                )
+            }
+            val transformer = builder.build()
 
             coroutineScope {
                 val progressJob =

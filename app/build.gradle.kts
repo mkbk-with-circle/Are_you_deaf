@@ -3,6 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
+    id("androidx.room")
 }
 
 android {
@@ -44,6 +45,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
+    lint {
+        // 依赖升级需要相机、转码、闹钟逐项真机回归；版本提示由人工升级任务管理，
+        // 不让纯“有新版”建议掩盖真正的正确性问题。
+        disable += setOf("GradleDependency", "ObsoleteLintCustomCheck")
+    }
 }
 
 // 百度网盘同步会在 build/.gradle 等目录写入 .baiduyun.uploading.cfg，导致 AAPT 链接失败
@@ -56,8 +65,18 @@ tasks.register("cleanBaiduyunSyncArtifacts") {
                 if (file.delete()) removed++
             }
         }
+        // 部分同步盘会把正在生成的 dex/class 冲突副本命名成 “Foo 2.dex”。它们只可能位于
+        // build/intermediates，继续交给 D8 会变成 “Type is defined multiple times”。严格限定
+        // 在生成目录和生成后缀内清理，不扫描或改动任何源码/资源文件。
+        val generatedRoot = layout.buildDirectory.dir("intermediates").get().asFile
+        val conflictCopy = Regex(".+ \\d+\\.(dex|class|jar)$")
+        if (generatedRoot.isDirectory) {
+            generatedRoot.walkTopDown().forEach { file ->
+                if (file.isFile && conflictCopy.matches(file.name) && file.delete()) removed++
+            }
+        }
         if (removed > 0) {
-            logger.lifecycle("已清理 $removed 个百度网盘同步临时文件")
+            logger.lifecycle("已清理 $removed 个同步盘构建冲突文件")
         }
     }
 }
@@ -69,6 +88,10 @@ tasks.named("preBuild") {
 // Room 生成 Kotlin 而非 Java，避免 KSP 增量复制异常时出现重复的 *_Impl 参与 javac
 ksp {
     arg("room.generateKotlin", "true")
+}
+
+room {
+    schemaDirectory("$projectDir/schemas")
 }
 
 dependencies {
@@ -86,14 +109,18 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material:material-icons-extended")
 
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.navigation:navigation-compose:2.8.9")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    /** 附近 Log 邀请二维码：只引入纯解码核心，相机预览复用已有 CameraX。 */
+    implementation("com.google.zxing:core:3.5.3")
 
     /** 农历生日 → 当年公历，用于提醒日计算 */
     implementation("cn.6tail:lunar:1.7.4")
@@ -110,11 +137,14 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.room:room-testing:2.6.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

@@ -1,6 +1,7 @@
 package com.nierduolong.morningbell.dailylog
 
 import android.content.Context
+import android.os.storage.StorageManager
 import java.io.File
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -12,6 +13,23 @@ object DailyLogStorage {
     /** 低于此可用空间就拒绝开始录制，避免录到一半写满磁盘产生损坏文件 */
     const val MIN_FREE_BYTES = 300L * 1024 * 1024
 
+    data class StorageBreakdown(
+        val originalBytes: Long = 0,
+        val compilationBytes: Long = 0,
+        val thumbnailBytes: Long = 0,
+        val temporaryBytes: Long = 0,
+        val otherBytes: Long = 0,
+        val usableBytes: Long = Long.MAX_VALUE,
+    ) {
+        val totalBytes: Long
+            get() = originalBytes + compilationBytes + thumbnailBytes + temporaryBytes + otherBytes
+    }
+
+    data class SafeCleanupResult(
+        val freedBytes: Long,
+        val deletedFiles: Int,
+    )
+
     private fun root(context: Context): File {
         val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "dailylog")
         dir.mkdirs()
@@ -20,18 +38,20 @@ object DailyLogStorage {
 
     fun clipsDirForDay(
         context: Context,
+        logId: Long,
         dayEpoch: Long,
     ): File {
         val dayStr = dayFmt.format(LocalDate.ofEpochDay(dayEpoch))
-        val dir = File(root(context), dayStr)
+        val dir = File(File(File(root(context), "logs"), logId.toString()), "clips/$dayStr")
         dir.mkdirs()
         return dir
     }
 
     fun newClipFile(
         context: Context,
+        logId: Long,
         dayEpoch: Long,
-    ): File = File(clipsDirForDay(context, dayEpoch), "clip_${System.currentTimeMillis()}.mp4")
+    ): File = File(clipsDirForDay(context, logId, dayEpoch), "clip_${System.currentTimeMillis()}.mp4")
 
     fun compilationsDir(context: Context): File {
         val dir = File(root(context), "compilations")
@@ -41,16 +61,31 @@ object DailyLogStorage {
 
     fun compilationFile(
         context: Context,
+        logId: Long,
         dayEpoch: Long,
     ): File {
         val dayStr = dayFmt.format(LocalDate.ofEpochDay(dayEpoch))
-        return File(compilationsDir(context), "daily_$dayStr.mp4")
+        val dir = File(File(File(root(context), "logs"), logId.toString()), "compilations")
+        dir.mkdirs()
+        return File(dir, "daily_$dayStr.mp4")
     }
 
     fun thumbsDir(context: Context): File {
         val dir = File(root(context), "thumbs")
         dir.mkdirs()
         return dir
+    }
+
+    /** 远端缩略图是小型可重建缓存，按 Log 与素材 UUID 隔离。 */
+    fun remoteThumbnailFile(
+        context: Context,
+        logId: Long,
+        clientUuid: String,
+    ): File {
+        val safeName = clientUuid.filter { it.isLetterOrDigit() || it == '-' }.take(80)
+        val dir = File(File(File(root(context), "logs"), logId.toString()), "thumbs")
+        dir.mkdirs()
+        return File(dir, "$safeName.jpg")
     }
 
     /**
@@ -105,10 +140,11 @@ object DailyLogStorage {
     /** 清理完某天的原始素材后，空目录留着只会让归档目录越翻越乱 */
     fun deleteDayDirIfEmpty(
         context: Context,
+        logId: Long,
         dayEpoch: Long,
     ) {
         runCatching {
-            val dir = clipsDirForDay(context, dayEpoch)
+            val dir = clipsDirForDay(context, logId, dayEpoch)
             if (dir.listFiles()?.isEmpty() == true) dir.delete()
         }
     }
@@ -116,21 +152,102 @@ object DailyLogStorage {
     /** 录制前的空间闸门：容量不足时上层应提示用户而不是照常开录 */
     fun hasEnoughFreeSpace(context: Context): Boolean = usableSpaceBytes(context) > MIN_FREE_BYTES
 
-    fun usableSpaceBytes(context: Context): Long = runCatching { root(context).usableSpace }.getOrDefault(Long.MAX_VALUE)
-
-    /** 日志功能占用的总字节数（素材 + 合成 + 缩略图），用于「我的」页展示与清理决策 */
-    fun occupiedBytes(context: Context): Long =
+    fun usableSpaceBytes(context: Context): Long =
         runCatching {
-            root(context).walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        }.getOrDefault(0L)
+            val base = root(context)
+            val storage = context.getSystemService(StorageManager::class.java)
+            if (storage == null) base.usableSpace else storage.getAllocatableBytes(storage.getUuidForPath(base))
+        }.getOrElse { runCatching { root(context).usableSpace }.getOrDefault(Long.MAX_VALUE) }
+
+    /** 单次目录遍历完成分类统计，避免设置页为了五个数字重复扫描大型视频目录。 */
+    fun storageBreakdown(context: Context): StorageBreakdown =
+        runCatching {
+            var originals = 0L
+            var compilations = 0L
+            var thumbnails = 0L
+            var temporary = 0L
+            var other = 0L
+            val base = root(context)
+            base.walkTopDown().filter(File::isFile).forEach { file ->
+                val relative = file.relativeTo(base).invariantSeparatorsPath
+                when (StorageFileClassifier.category(relative)) {
+                    StorageFileCategory.ORIGINAL -> originals += file.length()
+                    StorageFileCategory.COMPILATION -> compilations += file.length()
+                    StorageFileCategory.THUMBNAIL -> thumbnails += file.length()
+                    StorageFileCategory.TEMPORARY -> temporary += file.length()
+                    StorageFileCategory.OTHER -> other += file.length()
+                }
+            }
+            // 附近快传的图片预览也完全可重建，统一计入缩略图，避免 cacheDir 占用对用户不可见。
+            thumbnails += File(context.cacheDir, "nearby-transfer-images")
+                .walkTopDown()
+                .filter(File::isFile)
+                .sumOf(File::length)
+            StorageBreakdown(originals, compilations, thumbnails, temporary, other, usableSpaceBytes(context))
+        }.getOrDefault(StorageBreakdown(usableBytes = usableSpaceBytes(context)))
+
+    /** 日志功能占用的总字节数（素材 + 合成 + 缩略图），用于兼容旧调用。 */
+    fun occupiedBytes(context: Context): Long = storageBreakdown(context).totalBytes
+
+    /**
+     * 只删除可重建缩略图与一小时前遗留的 `.tmp`/`.part`，不会触碰任何正常 mp4。
+     * 在写临时文件仍持续更新时间时，它不会满足静默期。
+     */
+    fun clearRebuildableFiles(context: Context): SafeCleanupResult {
+        val base = root(context)
+        val before = occupiedBytes(context)
+        var deleted =
+            base.walkTopDown().count { file ->
+                file.isFile && StorageFileClassifier.category(file.relativeTo(base).invariantSeparatorsPath) == StorageFileCategory.THUMBNAIL
+            }
+        clearThumbnailCache(context)
+        val cutoff = System.currentTimeMillis() - TEMP_FILE_MIN_AGE_MS
+        base.walkTopDown().filter(File::isFile).forEach { file ->
+            val category = StorageFileClassifier.category(file.relativeTo(base).invariantSeparatorsPath)
+            if (category == StorageFileCategory.TEMPORARY &&
+                file.lastModified() > 0L && file.lastModified() < cutoff && file.delete()
+            ) {
+                deleted++
+            }
+        }
+        val after = occupiedBytes(context)
+        return SafeCleanupResult((before - after).coerceAtLeast(0L), deleted)
+    }
 
     /** 删除缩略图缓存（可随时重建，属于最安全的清理项） */
     fun clearThumbnailCache(context: Context) {
         runCatching { thumbsDir(context).deleteRecursively() }
+        runCatching { File(context.cacheDir, "nearby-transfer-images").deleteRecursively() }
+        runCatching {
+            File(root(context), "logs").listFiles()?.forEach { logDir ->
+                File(logDir, "thumbs").takeIf { it.isDirectory }?.deleteRecursively()
+            }
+        }
+    }
+
+    /** 远端 JPEG 分散在各 Log 目录，统一按最近修改时间淘汰，避免成员变多后缓存无上限增长。 */
+    @Synchronized
+    fun trimRemoteThumbnailCache(
+        context: Context,
+        maxBytes: Long = 40L * 1024 * 1024,
+    ) {
+        runCatching {
+            val files =
+                File(root(context), "logs").listFiles().orEmpty()
+                    .flatMap { logDir -> File(logDir, "thumbs").listFiles().orEmpty().filter(File::isFile) }
+            var total = files.sumOf(File::length)
+            if (total <= maxBytes) return
+            files.sortedBy(File::lastModified).forEach { file ->
+                if (total <= maxBytes * 3 / 4) return
+                val length = file.length()
+                if (file.delete()) total -= length
+            }
+        }
     }
 
     /** 孤儿判定的静默期：刚录完还没落库的文件不能被当成垃圾删掉 */
     private const val ORPHAN_MIN_AGE_MS = 6L * 60 * 60 * 1000
+    private const val TEMP_FILE_MIN_AGE_MS = 60L * 60 * 1000
 
     /**
      * 清掉数据库里已经不存在记录的孤儿文件（例如录制中途崩溃留下的半截 mp4）。
@@ -151,18 +268,18 @@ object DailyLogStorage {
     ): Int {
         if (knownPaths.isEmpty()) return 0
         val knownNames = knownPaths.mapTo(HashSet()) { File(it).name }
-        val thumbs = thumbsDir(context).absolutePath
-        val compilations = compilationsDir(context).absolutePath
         val now = System.currentTimeMillis()
 
         val candidates =
             root(context).walkTopDown().filter { it.isFile }.filter { file ->
                 val path = file.absolutePath
-                val underCache = path.startsWith(thumbs) || path.startsWith(compilations)
+                val underThumbCache = file.parentFile?.name == "thumbs"
+                // v10 的合成在 dailylog/compilations，v11 起在 logs/<logId>/compilations。
+                val underCompilation = file.parentFile?.name == "compilations"
                 val stale = now - file.lastModified() > ORPHAN_MIN_AGE_MS
                 // 合成目录只清残留的临时文件，正式合成结果由数据库删除逻辑负责
-                if (underCache) {
-                    path.startsWith(compilations) && path.endsWith(".tmp") && stale
+                if (underThumbCache || underCompilation) {
+                    underCompilation && path.endsWith(".tmp") && stale
                 } else {
                     file.name !in knownNames && stale
                 }
@@ -170,5 +287,30 @@ object DailyLogStorage {
 
         if (candidates.size > knownNames.size) return 0
         return candidates.count { it.delete() }
+    }
+}
+
+internal enum class StorageFileCategory {
+    ORIGINAL,
+    COMPILATION,
+    THUMBNAIL,
+    TEMPORARY,
+    OTHER,
+}
+
+internal object StorageFileClassifier {
+    fun category(relativePath: String): StorageFileCategory {
+        val normalized = relativePath.replace('\\', '/').lowercase()
+        val name = normalized.substringAfterLast('/')
+        if (name.endsWith(".tmp") || name.endsWith(".part") || ".part-" in name) {
+            return StorageFileCategory.TEMPORARY
+        }
+        val segments = normalized.split('/')
+        return when {
+            "thumbs" in segments -> StorageFileCategory.THUMBNAIL
+            "compilations" in segments -> StorageFileCategory.COMPILATION
+            "clips" in segments -> StorageFileCategory.ORIGINAL
+            else -> StorageFileCategory.OTHER
+        }
     }
 }

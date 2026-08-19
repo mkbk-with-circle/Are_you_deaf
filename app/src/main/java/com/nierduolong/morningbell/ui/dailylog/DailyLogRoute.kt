@@ -31,6 +31,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.NotificationsNone
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -66,7 +68,12 @@ import com.nierduolong.morningbell.MorningBellApp
 import com.nierduolong.morningbell.R
 import com.nierduolong.morningbell.core.DailyLogStats
 import com.nierduolong.morningbell.dailylog.CompileCoordinator
+import com.nierduolong.morningbell.dailylog.CompilePreflight
+import com.nierduolong.morningbell.dailylog.CompilePreflightReport
 import com.nierduolong.morningbell.dailylog.ReminderScheduler
+import com.nierduolong.morningbell.dailylog.lan.NearbySessionCoordinator
+import com.nierduolong.morningbell.dailylog.lan.NearbyAutoConnector
+import com.nierduolong.morningbell.dailylog.lan.NearbyMemberReadiness
 import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.data.DailyLogSettings
 import com.nierduolong.morningbell.data.db.DayLogSummary
@@ -86,17 +93,22 @@ fun DailyLogRoute(
     onOpenCapture: () -> Unit,
     onOpenDay: (Long) -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenNearby: () -> Unit,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as MorningBellApp
     val scope = rememberCoroutineScope()
     val today = rememberTodayEpochDay()
 
-    val logId by repo.personalLogIdFlow.collectAsState()
+    val logId by repo.currentLogIdFlow.collectAsState()
     val nickname by repo.nicknameFlow.collectAsState()
     val cadence by repo.reminderCadenceFlow.collectAsState()
     val window by repo.reminderWindowFlow.collectAsState()
     val compileState by CompileCoordinator.state.collectAsState()
+    val logs by repo.dailyLogsFlow.collectAsState(initial = emptyList())
+    val activeLog = remember(logs, logId) { logs.firstOrNull { it.id == logId } }
+    val nearbySession by NearbySessionCoordinator.state.collectAsState()
+    val nearbyAutoConnection by NearbyAutoConnector.state.collectAsState()
 
     val daySummaries by
         remember(logId) { logId?.let { repo.daySummariesFlow(it) } ?: flowOf(emptyList()) }
@@ -104,6 +116,10 @@ fun DailyLogRoute(
     val todayClips by
         remember(logId, today) {
             logId?.let { repo.clipsForDayFlow(it, today) } ?: flowOf(emptyList())
+        }.collectAsState(initial = emptyList())
+    val nearbyMembers by
+        remember(logId, activeLog?.isPersonal) {
+            logId?.takeIf { activeLog?.isPersonal == false }?.let(repo::logMembersFlow) ?: flowOf(emptyList())
         }.collectAsState(initial = emptyList())
     val compilations by
         remember(logId) { logId?.let { repo.compilationsFlow(it) } ?: flowOf(emptyList()) }
@@ -117,7 +133,62 @@ fun DailyLogRoute(
     val pastDays = remember(daySummaries, today) { daySummaries.filter { it.dayEpoch != today } }
 
     var showReminderSheet by remember { mutableStateOf(false) }
+    var showCompilePreflight by remember { mutableStateOf(false) }
+    var checkingCompilePreflight by remember { mutableStateOf(false) }
+    var compilePreflightReport by remember { mutableStateOf<CompilePreflightReport?>(null) }
     val sheetState = rememberModalBottomSheetState()
+
+    fun startTodayCompile(excludedClipIds: Set<Long> = emptySet()) {
+        val id = logId ?: return
+        showCompilePreflight = false
+        val started =
+            CompileCoordinator.start(
+                scope = app.appScope,
+                context = context,
+                repo = repo,
+                logId = id,
+                dayEpoch = today,
+                force = today in compiledDays,
+                excludedClipIds = excludedClipIds,
+            )
+        if (!started) {
+            android.widget.Toast
+                .makeText(context, context.getString(R.string.dailylog_compiling), android.widget.Toast.LENGTH_SHORT)
+                .show()
+        }
+    }
+
+    fun inspectTodayBeforeCompile() {
+        val id = logId ?: return
+        if (activeLog?.isPersonal != false) {
+            startTodayCompile()
+            return
+        }
+        showCompilePreflight = true
+        checkingCompilePreflight = true
+        compilePreflightReport = null
+        scope.launch {
+            val result = runCatching { CompilePreflight.inspect(repo, id, today) }
+            checkingCompilePreflight = false
+            result.onSuccess { compilePreflightReport = it }
+                .onFailure {
+                    showCompilePreflight = false
+                    android.widget.Toast.makeText(context, it.message ?: "无法检查附近素材", android.widget.Toast.LENGTH_SHORT).show()
+                }
+        }
+    }
+
+    if (showCompilePreflight) {
+        CompilePreflightDialog(
+            checking = checkingCompilePreflight,
+            report = compilePreflightReport,
+            onRetry = ::inspectTodayBeforeCompile,
+            onCompile = { skip ->
+                startTodayCompile(if (skip) compilePreflightReport?.unavailableClipIds.orEmpty() else emptySet())
+            },
+            onDismiss = { showCompilePreflight = false },
+        )
+    }
 
     // 合成结束弹一次提示就复位，避免切回页面反复提示
     LaunchedEffect(compileState) {
@@ -126,13 +197,11 @@ fun DailyLogRoute(
             android.widget.Toast
                 .makeText(
                     context,
-                    context.getString(
-                        if (state is CompileCoordinator.State.Success) {
-                            R.string.dailylog_compile_done
-                        } else {
-                            R.string.dailylog_compile_failed
-                        },
-                    ),
+                    if (state is CompileCoordinator.State.Success) {
+                        context.getString(R.string.dailylog_compile_done)
+                    } else {
+                        (state as CompileCoordinator.State.Failed).message
+                    },
                     android.widget.Toast.LENGTH_SHORT,
                 ).show()
             CompileCoordinator.consumeTerminalState()
@@ -149,11 +218,81 @@ fun DailyLogRoute(
     ) {
         item {
             LogHeader(
-                nickname = nickname,
+                title = activeLog?.name ?: nickname,
                 streak = streak,
                 totalDays = daySummaries.size,
                 onOpenReminders = { showReminderSheet = true },
+                onOpenNearby = onOpenNearby,
             )
+        }
+
+        val showConnectionBanner =
+            nearbyAutoConnection is NearbyAutoConnector.State.FoundUnjoined ||
+                nearbyAutoConnection is NearbyAutoConnector.State.Connecting ||
+                (activeLog?.role == "member" &&
+                    (nearbyAutoConnection is NearbyAutoConnector.State.Reconnecting ||
+                        nearbyAutoConnection is NearbyAutoConnector.State.WaitingForHotspot ||
+                        nearbyAutoConnection is NearbyAutoConnector.State.Failed))
+        if (showConnectionBanner) {
+            item {
+                val message =
+                    when (val state = nearbyAutoConnection) {
+                        is NearbyAutoConnector.State.Connecting -> "正在自动连接 ${state.logName}…"
+                        is NearbyAutoConnector.State.Reconnecting -> "连接中断，正在自动恢复（第 ${state.attempt} 次）"
+                        is NearbyAutoConnector.State.WaitingForHotspot -> "等待房主热点 · ${state.retryInSeconds} 秒后重试"
+                        is NearbyAutoConnector.State.Failed -> "附近 Log 暂未连接 · 点此查看原因"
+                        else -> "已发现热点中的附近 Log · 输入一次邀请码"
+                    }
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable(onClick = onOpenNearby)
+                            .padding(horizontal = 16.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Filled.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+
+        if (activeLog?.isPersonal == false && nearbyMembers.isNotEmpty()) {
+            item {
+                val hostReachable =
+                    (nearbySession is NearbySessionCoordinator.State.Hosting &&
+                        (nearbySession as? NearbySessionCoordinator.State.Hosting)?.logId == activeLog.id) ||
+                        (nearbyAutoConnection is NearbyAutoConnector.State.Connected &&
+                            (nearbyAutoConnection as? NearbyAutoConnector.State.Connected)?.logId == activeLog.id)
+                val statuses =
+                    NearbyMemberReadiness.calculate(
+                        members = nearbyMembers,
+                        clips = todayClips,
+                        hostDeviceId = activeLog.hostDeviceId,
+                        hostReachable = hostReachable,
+                    )
+                val ready = statuses.count { it.ready }
+                val online = statuses.count { it.online }
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onOpenNearby)
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                ) {
+                    Icon(Icons.Filled.People, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(
+                        "今日 $ready/${statuses.size} 人已记录 · $online 人在线",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("查看", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
         }
 
         item {
@@ -161,8 +300,8 @@ fun DailyLogRoute(
                 clips = todayClips,
                 onRecord = onOpenCapture,
                 onPlayFrom = { index ->
-                    PlaybackQueue.set(
-                        todayClips.drop(index).filter { it.sourceKept }.map { it.filePath },
+                    PlaybackQueue.setItems(
+                        playbackItemsFor(todayClips.drop(index), activeLog, nearbySession),
                         context.getString(R.string.dailylog_today_title),
                     )
                     onOpenPlayer()
@@ -177,27 +316,14 @@ fun DailyLogRoute(
                 compileState = compileState,
                 today = today,
                 onPlayToday = {
-                    PlaybackQueue.set(
-                        todayClips.filter { it.sourceKept }.map { it.filePath },
+                    PlaybackQueue.setItems(
+                        playbackItemsFor(todayClips, activeLog, nearbySession),
                         context.getString(R.string.dailylog_today_title),
                     )
                     onOpenPlayer()
                 },
                 onCompile = {
-                    val id = logId ?: return@TodayActions
-                    val started =
-                        CompileCoordinator.start(
-                            scope = app.appScope,
-                            context = context,
-                            repo = repo,
-                            logId = id,
-                            dayEpoch = today,
-                        )
-                    if (!started) {
-                        android.widget.Toast
-                            .makeText(context, context.getString(R.string.dailylog_compiling), android.widget.Toast.LENGTH_SHORT)
-                            .show()
-                    }
+                    inspectTodayBeforeCompile()
                 },
             )
         }
@@ -277,10 +403,11 @@ fun DailyLogRoute(
  */
 @Composable
 private fun LogHeader(
-    nickname: String,
+    title: String,
     streak: Int,
     totalDays: Int,
     onOpenReminders: () -> Unit,
+    onOpenNearby: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 18.dp)) {
         Row(
@@ -288,12 +415,15 @@ private fun LogHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                nickname,
+                title,
                 style = MaterialTheme.typography.headlineSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            IconButton(onClick = onOpenNearby) {
+                Icon(Icons.Filled.People, contentDescription = "附近 Log")
+            }
             IconButton(onClick = onOpenReminders) {
                 Icon(Icons.Filled.NotificationsNone, contentDescription = null)
             }
@@ -382,10 +512,24 @@ private fun TodayStrip(
                         )
                     }
                 StoryItem(label = time, onClick = { onPlayFrom(index) }) {
-                    VideoThumbnail(
-                        path = clip.filePath,
-                        modifier = Modifier.fillMaxSize().clip(CircleShape),
-                    )
+                    if ((clip.sourceKept && clip.filePath.isNotBlank()) || clip.localThumbPath != null) {
+                        VideoThumbnail(
+                            path = clip.filePath,
+                            thumbnailPath = clip.localThumbPath,
+                            modifier = Modifier.fillMaxSize().clip(CircleShape),
+                        )
+                    } else {
+                        Box(
+                            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.Wifi,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -489,8 +633,12 @@ private fun DayTile(
                 .aspectRatio(1f)
                 .clickable(onClick = onClick),
     ) {
-        if (summary.coverPath != null) {
-            VideoThumbnail(path = summary.coverPath, modifier = Modifier.fillMaxSize())
+        if (summary.coverPath != null || summary.coverThumbPath != null) {
+            VideoThumbnail(
+                path = summary.coverPath.orEmpty(),
+                thumbnailPath = summary.coverThumbPath,
+                modifier = Modifier.fillMaxSize(),
+            )
         } else {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant))
         }

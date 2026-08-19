@@ -28,6 +28,7 @@ object CompileCoordinator {
 
         data class Failed(
             val dayEpoch: Long,
+            val message: String,
         ) : State
     }
 
@@ -42,6 +43,7 @@ object CompileCoordinator {
         logId: Long,
         dayEpoch: Long,
         force: Boolean = false,
+        excludedClipIds: Set<Long> = emptySet(),
     ): Boolean {
         if (stateFlow.value is State.Running) return false
         stateFlow.value = State.Running(dayEpoch, 0f)
@@ -54,6 +56,7 @@ object CompileCoordinator {
                         logId = logId,
                         dayEpoch = dayEpoch,
                         force = force,
+                        excludedClipIds = excludedClipIds,
                         onProgress = { p ->
                             val current = stateFlow.value
                             if (current is State.Running && current.dayEpoch == dayEpoch) {
@@ -66,7 +69,7 @@ object CompileCoordinator {
                 if (result.isSuccess && result.getOrNull() != null) {
                     State.Success(dayEpoch)
                 } else {
-                    State.Failed(dayEpoch)
+                    State.Failed(dayEpoch, CompileFailureMessage.from(result.exceptionOrNull()))
                 }
         }
         return true
@@ -76,5 +79,20 @@ object CompileCoordinator {
     fun consumeTerminalState() {
         val current = stateFlow.value
         if (current is State.Success || current is State.Failed) stateFlow.value = State.Idle
+    }
+}
+
+internal object CompileFailureMessage {
+    fun from(error: Throwable?): String {
+        val message = error?.message.orEmpty()
+        val lower = message.lowercase()
+        return when {
+            "404" in message || "不可用" in message || "未连接" in message || "timeout" in lower ->
+                "成员设备在合成期间离线，请连接后重试"
+            "space" in lower || "空间" in message -> "存储空间不足，清理后再试"
+            "没有可合成" in message -> "当前没有可以读取的素材"
+            message.isNotBlank() -> "合成失败：${message.take(80)}"
+            else -> "合成失败，请稍后重试"
+        }
     }
 }

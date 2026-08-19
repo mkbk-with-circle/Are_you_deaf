@@ -111,19 +111,31 @@ interface DailyLogDao {
     @Query("SELECT * FROM daily_logs ORDER BY id ASC")
     fun observeLogs(): Flow<List<DailyLogEntity>>
 
+    @Query("SELECT * FROM daily_logs WHERE id = :id LIMIT 1")
+    suspend fun getLog(id: Long): DailyLogEntity?
+
+    @Query("SELECT * FROM daily_logs WHERE remoteId = :remoteId LIMIT 1")
+    suspend fun getLogByRemoteId(remoteId: String): DailyLogEntity?
+
+    @Query("SELECT * FROM daily_logs WHERE role = 'member' AND remoteId IS NOT NULL AND inviteCode IS NOT NULL ORDER BY lastSyncedAt DESC, id DESC")
+    suspend fun memberLogs(): List<DailyLogEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertClip(clip: LogClipEntity): Long
 
-    @Query("SELECT * FROM log_clips WHERE logId = :logId ORDER BY dayEpoch DESC, id DESC")
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertClip(clip: LogClipEntity): Long
+
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND transferState != 'deleted' ORDER BY dayEpoch DESC, id DESC")
     fun observeClips(logId: Long): Flow<List<LogClipEntity>>
 
-    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch ORDER BY id ASC")
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch AND transferState != 'deleted' ORDER BY id ASC")
     suspend fun clipsForDay(
         logId: Long,
         dayEpoch: Long,
     ): List<LogClipEntity>
 
-    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch ORDER BY createdAt ASC, id ASC")
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch AND transferState != 'deleted' ORDER BY createdAt ASC, id ASC")
     fun observeClipsForDay(
         logId: Long,
         dayEpoch: Long,
@@ -134,13 +146,15 @@ interface DailyLogDao {
         "SELECT c.dayEpoch AS dayEpoch, COUNT(*) AS clipCount, SUM(c.durationMs) AS totalDurationMs, " +
             "MAX(c.createdAt) AS lastClipAt, SUM(c.sourceKept) AS keptCount, " +
             "(SELECT c2.filePath FROM log_clips c2 WHERE c2.logId = c.logId AND c2.dayEpoch = c.dayEpoch " +
-            "AND c2.sourceKept = 1 ORDER BY c2.createdAt ASC, c2.id ASC LIMIT 1) AS coverPath " +
-            "FROM log_clips c WHERE c.logId = :logId " +
+            "AND c2.sourceKept = 1 AND c2.transferState != 'deleted' ORDER BY c2.createdAt ASC, c2.id ASC LIMIT 1) AS coverPath, " +
+            "(SELECT c3.localThumbPath FROM log_clips c3 WHERE c3.logId = c.logId AND c3.dayEpoch = c.dayEpoch " +
+            "AND c3.localThumbPath IS NOT NULL AND c3.transferState != 'deleted' ORDER BY c3.createdAt ASC, c3.id ASC LIMIT 1) AS coverThumbPath " +
+            "FROM log_clips c WHERE c.logId = :logId AND c.transferState != 'deleted' " +
             "GROUP BY c.dayEpoch ORDER BY c.dayEpoch DESC",
     )
     fun observeDaySummaries(logId: Long): Flow<List<DayLogSummary>>
 
-    @Query("SELECT MAX(createdAt) FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch")
+    @Query("SELECT MAX(createdAt) FROM log_clips WHERE logId = :logId AND dayEpoch = :dayEpoch AND transferState != 'deleted'")
     suspend fun lastClipCreatedAt(
         logId: Long,
         dayEpoch: Long,
@@ -194,8 +208,27 @@ interface DailyLogDao {
     @Query("SELECT * FROM log_clips WHERE id = :id")
     suspend fun getClip(id: Long): LogClipEntity?
 
+    @Query("SELECT * FROM log_clips WHERE logId = :logId AND clientUuid = :clientUuid LIMIT 1")
+    suspend fun getClipByClientUuid(
+        logId: Long,
+        clientUuid: String,
+    ): LogClipEntity?
+
     @Update
     suspend fun updateClip(clip: LogClipEntity)
+
+    @Query("UPDATE log_clips SET localThumbPath = :path WHERE logId = :logId AND clientUuid = :clientUuid")
+    suspend fun updateClipThumbnail(
+        logId: Long,
+        clientUuid: String,
+        path: String,
+    ): Int
+
+    @Query("UPDATE log_clips SET contentSha256 = :sha256 WHERE id = :id")
+    suspend fun updateClipSha256(
+        id: Long,
+        sha256: String,
+    )
 
     @Query("DELETE FROM log_clips WHERE id = :id")
     suspend fun deleteClip(id: Long)
@@ -224,8 +257,97 @@ interface DailyLogDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertComment(c: LogCommentEntity): Long
 
-    @Query("SELECT * FROM log_comments WHERE clipId = :clipId ORDER BY id ASC")
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertComment(c: LogCommentEntity): Long
+
+    @Query("SELECT * FROM log_comments WHERE clientUuid = :clientUuid LIMIT 1")
+    suspend fun getCommentByClientUuid(clientUuid: String): LogCommentEntity?
+
+    @Query("SELECT * FROM log_comments WHERE clipId = :clipId AND deleted = 0 ORDER BY id ASC")
     fun observeComments(clipId: Long): Flow<List<LogCommentEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertMember(member: LogMemberEntity): Long
+
+    @Query("SELECT * FROM log_members WHERE logId = :logId ORDER BY joinedAt ASC")
+    fun observeMembers(logId: Long): Flow<List<LogMemberEntity>>
+
+    @Query("SELECT * FROM log_members WHERE logId = :logId ORDER BY joinedAt ASC")
+    suspend fun members(logId: Long): List<LogMemberEntity>
+
+    @Query("SELECT * FROM log_members WHERE logId = :logId AND authorId = :authorId LIMIT 1")
+    suspend fun getMember(
+        logId: Long,
+        authorId: String,
+    ): LogMemberEntity?
+
+    @Query("UPDATE daily_logs SET memberCount = :count WHERE id = :logId")
+    suspend fun updateMemberCount(
+        logId: Long,
+        count: Int,
+    )
+
+    @Query("UPDATE log_members SET sourceAddress = :address, sourcePort = :port, lastSeenAt = :seenAt WHERE logId = :logId AND authorId = :authorId")
+    suspend fun updateMemberSource(
+        logId: Long,
+        authorId: String,
+        address: String,
+        port: Int,
+        seenAt: Long,
+    ): Int
+
+    @Query("UPDATE log_members SET lastSeenAt = :seenAt WHERE logId = :logId AND authorId = :authorId")
+    suspend fun touchMember(
+        logId: Long,
+        authorId: String,
+        seenAt: Long,
+    ): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun enqueueOutbox(item: SyncOutboxEntity): Long
+
+    @Query(
+        "SELECT * FROM sync_outbox WHERE logId = :logId AND nextAttemptAt <= :now " +
+            "ORDER BY id ASC LIMIT :limit",
+    )
+    suspend fun pendingOutbox(
+        logId: Long,
+        now: Long,
+        limit: Int,
+    ): List<SyncOutboxEntity>
+
+    @Query("DELETE FROM sync_outbox WHERE operationId = :operationId")
+    suspend fun acknowledgeOutbox(operationId: String)
+
+    @Query("UPDATE sync_outbox SET attempts = :attempts, nextAttemptAt = :nextAttemptAt WHERE operationId = :operationId")
+    suspend fun postponeOutbox(
+        operationId: String,
+        attempts: Int,
+        nextAttemptAt: Long,
+    )
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertSyncEvent(event: SyncEventEntity): Long
+
+    @Query("SELECT * FROM sync_events WHERE logId = :logId AND id > :after ORDER BY id ASC LIMIT :limit")
+    suspend fun syncEventsAfter(
+        logId: Long,
+        after: Long,
+        limit: Int,
+    ): List<SyncEventEntity>
+
+    @Query("SELECT * FROM sync_events WHERE logId = :logId AND operationId = :operationId LIMIT 1")
+    suspend fun getSyncEventByOperationId(
+        logId: Long,
+        operationId: String,
+    ): SyncEventEntity?
+
+    @Query("UPDATE daily_logs SET lastSyncCursor = :cursor, lastSyncedAt = :syncedAt WHERE id = :logId")
+    suspend fun updateSyncCursor(
+        logId: Long,
+        cursor: Long,
+        syncedAt: Long,
+    )
 }
 
 @Dao

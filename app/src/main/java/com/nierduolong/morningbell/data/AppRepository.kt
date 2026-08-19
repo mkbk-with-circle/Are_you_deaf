@@ -9,6 +9,8 @@ import com.nierduolong.morningbell.core.LunarBirthdayCalendar
 import com.nierduolong.morningbell.core.RetentionPolicy
 import com.nierduolong.morningbell.core.StickyThemeRegistry
 import com.nierduolong.morningbell.dailylog.DailyLogStorage
+import com.nierduolong.morningbell.dailylog.lan.DeviceIdentity
+import com.nierduolong.morningbell.dailylog.lan.SyncRetryPolicy
 import com.nierduolong.morningbell.data.db.AlarmEntity
 import com.nierduolong.morningbell.data.db.AppDatabase
 import com.nierduolong.morningbell.data.db.ChainAlarmGroupEntity
@@ -24,6 +26,9 @@ import com.nierduolong.morningbell.data.db.DayLogSummary
 import com.nierduolong.morningbell.data.db.LogClipEntity
 import com.nierduolong.morningbell.data.db.DailyCompilationEntity
 import com.nierduolong.morningbell.data.db.LogCommentEntity
+import com.nierduolong.morningbell.data.db.LogMemberEntity
+import com.nierduolong.morningbell.data.db.SyncEventEntity
+import com.nierduolong.morningbell.data.db.SyncOutboxEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,17 +37,22 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.nierduolong.morningbell.weather.OpenMeteoWeather
 import com.nierduolong.morningbell.R
 import java.time.Instant
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.UUID
+import org.json.JSONObject
 import kotlin.random.Random
 
 class AppRepository(
     private val context: Context,
-    db: AppDatabase,
+    private val db: AppDatabase,
 ) {
     private val alarms = db.alarmDao()
     private val chainAlarms = db.chainAlarmDao()
@@ -56,6 +66,8 @@ class AppRepository(
     private val stickyThemePackIdState =
         MutableStateFlow(stickyThemeSettings.getUserSelectedThemePack())
     private val personalLogIdState = MutableStateFlow<Long?>(null)
+    private val currentLogIdState = MutableStateFlow<Long?>(null)
+    private val syncOperationMutex = Mutex()
 
     val alarmFlow: Flow<List<AlarmEntity>> = alarms.observeAlarms()
     val chainGroupFlow: Flow<List<ChainAlarmGroupEntity>> = chainAlarms.observeGroups()
@@ -70,6 +82,11 @@ class AppRepository(
 
     /** 本机唯一的个人日志 id；[ensurePersonalDailyLog] 完成前为 null */
     val personalLogIdFlow: StateFlow<Long?> = personalLogIdState.asStateFlow()
+
+    /** 当前正在浏览/拍摄的 Log；默认是个人 Log，附近房间创建后可显式切换。 */
+    val currentLogIdFlow: StateFlow<Long?> = currentLogIdState.asStateFlow()
+
+    val dailyLogsFlow: Flow<List<DailyLogEntity>> = dailyLog.observeLogs()
 
     suspend fun setStickyThemePack(id: String) =
         withContext(Dispatchers.IO) {
@@ -660,16 +677,134 @@ class AppRepository(
                     DailyLogEntity(name = "我的日志", isPersonal = true),
                 )
             personalLogIdState.value = id
+            if (currentLogIdState.value == null) currentLogIdState.value = id
             id
         }
+
+    suspend fun selectDailyLog(logId: Long): Boolean =
+        withContext(Dispatchers.IO) {
+            if (dailyLog.getLog(logId) == null) return@withContext false
+            currentLogIdState.value = logId
+            true
+        }
+
+    suspend fun getDailyLog(logId: Long): DailyLogEntity? =
+        withContext(Dispatchers.IO) { dailyLog.getLog(logId) }
+
+    suspend fun nearbyMemberLogs(): List<DailyLogEntity> =
+        withContext(Dispatchers.IO) { dailyLog.memberLogs() }
+
+    /** 创建由本机担任权威节点的附近 Log。热点服务关闭后记录仍会保留，方便下次重开。 */
+    suspend fun createNearbyDailyLog(
+        name: String,
+        hostDeviceId: String,
+        inviteCode: String,
+    ): DailyLogEntity =
+        withContext(Dispatchers.IO) {
+            val draft =
+                DailyLogEntity(
+                    name = name.trim().ifEmpty { "附近日志" },
+                    isPersonal = false,
+                    inviteCode = inviteCode,
+                    remoteId = UUID.randomUUID().toString(),
+                    role = "owner",
+                    hostDeviceId = hostDeviceId,
+                )
+            val id = dailyLog.upsertLog(draft)
+            currentLogIdState.value = id
+            draft.copy(id = id)
+        }
+
+    suspend fun joinNearbyDailyLog(
+        remoteId: String,
+        name: String,
+        hostDeviceId: String?,
+        inviteCode: String,
+        memberCount: Int,
+        hostAddress: String,
+        hostPort: Int,
+        hostServiceName: String,
+    ): DailyLogEntity =
+        withContext(Dispatchers.IO) {
+            val existing = dailyLog.getLogByRemoteId(remoteId)
+            val value =
+                DailyLogEntity(
+                    id = existing?.id ?: 0,
+                    name = name,
+                    isPersonal = false,
+                    inviteCode = inviteCode,
+                    remoteId = remoteId,
+                    role = "member",
+                    hostDeviceId = hostDeviceId,
+                    memberCount = memberCount.coerceAtLeast(1),
+                    lastSyncCursor = existing?.lastSyncCursor ?: 0,
+                    lastSyncedAt = System.currentTimeMillis(),
+                    lastHostAddress = hostAddress,
+                    lastHostPort = hostPort,
+                    lastHostServiceName = hostServiceName,
+                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                )
+            val id = dailyLog.upsertLog(value)
+            currentLogIdState.value = id
+            value.copy(id = id)
+        }
+
+    fun logMembersFlow(logId: Long): Flow<List<LogMemberEntity>> = dailyLog.observeMembers(logId)
+
+    suspend fun upsertLogMember(member: LogMemberEntity): Long =
+        withContext(Dispatchers.IO) {
+            val existing = dailyLog.getMember(member.logId, member.authorId)
+            val id =
+                dailyLog.upsertMember(
+                    member.copy(
+                        id = existing?.id ?: member.id,
+                        sourceAddress = member.sourceAddress ?: existing?.sourceAddress,
+                        sourcePort = member.sourcePort ?: existing?.sourcePort,
+                        joinedAt = existing?.joinedAt ?: member.joinedAt,
+                    ),
+                )
+            dailyLog.updateMemberCount(member.logId, dailyLog.members(member.logId).size.coerceAtLeast(1))
+            id
+        }
+
+    suspend fun logMembers(logId: Long): List<LogMemberEntity> =
+        withContext(Dispatchers.IO) { dailyLog.members(logId) }
+
+    suspend fun updateMemberSource(
+        logId: Long,
+        authorId: String,
+        address: String,
+        port: Int,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            dailyLog.updateMemberSource(logId, authorId, address, port, System.currentTimeMillis()) > 0
+        }
+
+    suspend fun touchLogMember(
+        logId: Long,
+        authorId: String,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            dailyLog.touchMember(logId, authorId, System.currentTimeMillis()) > 0
+        }
+
+    suspend fun getClipByClientUuid(
+        logId: Long,
+        clientUuid: String,
+    ): LogClipEntity? =
+        withContext(Dispatchers.IO) { dailyLog.getClipByClientUuid(logId, clientUuid)?.resolved() }
 
     // -- 路径归一化的唯一切面 --------------------------------------------
     // 库里存相对路径，界面与播放器要的是绝对路径。转换只发生在这一层：
     // 上层拿到的永远是可直接打开的绝对路径，写入时永远被压回相对路径。
 
-    private fun absolute(stored: String): String = DailyLogStorage.resolve(context, stored).absolutePath
+    private fun absolute(stored: String): String = if (stored.isBlank()) "" else DailyLogStorage.resolve(context, stored).absolutePath
 
-    private fun LogClipEntity.resolved(): LogClipEntity = copy(filePath = absolute(filePath))
+    private fun LogClipEntity.resolved(): LogClipEntity =
+        copy(
+            filePath = absolute(filePath),
+            localThumbPath = localThumbPath?.let(::absolute),
+        )
 
     private fun DailyCompilationEntity.resolved(): DailyCompilationEntity = copy(filePath = absolute(filePath))
 
@@ -691,7 +826,10 @@ class AppRepository(
             val compiledPaths = compilations.associate { it.dayEpoch to it.filePath }
             summaries.map { summary ->
                 val cover = summary.coverPath ?: compiledPaths[summary.dayEpoch]
-                summary.copy(coverPath = cover?.let { absolute(it) })
+                summary.copy(
+                    coverPath = cover?.let { absolute(it) },
+                    coverThumbPath = summary.coverThumbPath?.let { absolute(it) },
+                )
             }
         }
 
@@ -713,6 +851,13 @@ class AppRepository(
         dayEpoch: Long = LocalDate.now().toEpochDay(),
     ): Long =
         withContext(Dispatchers.IO) {
+            val log = dailyLog.getLog(logId)
+            val authorId =
+                if (log?.isPersonal == false) {
+                    runCatching { DeviceIdentity.getOrCreate().deviceId }.getOrNull()
+                } else {
+                    null
+                }
             dailyLog.insertClip(
                 LogClipEntity(
                     logId = logId,
@@ -720,16 +865,232 @@ class AppRepository(
                     filePath = DailyLogStorage.relativize(context, filePath),
                     durationMs = durationMs,
                     caption = caption?.trim()?.takeIf { it.isNotEmpty() },
+                    clientUuid = UUID.randomUUID().toString(),
+                    authorId = authorId,
                 ),
             )
         }
+
+    /** 合并主机下发的素材元数据；若本机已有原片，绝不以空远端记录覆盖本地路径。 */
+    suspend fun upsertRemoteClipMetadata(
+        logId: Long,
+        clientUuid: String,
+        authorId: String?,
+        dayEpoch: Long,
+        durationMs: Long,
+        caption: String?,
+        createdAt: Long,
+        contentSha256: String?,
+    ): Long =
+        withContext(Dispatchers.IO) {
+            val existing = dailyLog.getClipByClientUuid(logId, clientUuid)
+            if (existing?.transferState == "deleted") return@withContext existing.id
+            val value =
+                LogClipEntity(
+                    id = existing?.id ?: 0,
+                    logId = logId,
+                    dayEpoch = dayEpoch,
+                    filePath = existing?.filePath.orEmpty(),
+                    durationMs = durationMs,
+                    caption = caption,
+                    createdAt = createdAt,
+                    clientUuid = clientUuid,
+                    remoteId = existing?.remoteId,
+                    authorId = authorId,
+                    localThumbPath = existing?.localThumbPath,
+                    transferState = if (existing?.filePath.isNullOrBlank()) "available_remote" else "local",
+                    contentSha256 = contentSha256,
+                    sourceKept = existing?.sourceKept == true,
+                )
+            dailyLog.upsertClip(value)
+        }
+
+    suspend fun saveRemoteThumbnail(
+        logId: Long,
+        clientUuid: String,
+        absolutePath: String,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            val updated = dailyLog.updateClipThumbnail(
+                logId,
+                clientUuid,
+                DailyLogStorage.relativize(context, absolutePath),
+            ) > 0
+            if (updated) DailyLogStorage.trimRemoteThumbnailCache(context)
+            updated
+        }
+
+    /** 首次共享前以固定 64 KiB 缓冲计算内容摘要；只写 64 个十六进制字符，不复制视频。 */
+    suspend fun ensureClipSha256(clip: LogClipEntity): LogClipEntity =
+        withContext(Dispatchers.IO) {
+            if (clip.contentSha256?.length == 64) return@withContext clip
+            val file = File(clip.filePath)
+            if (!file.isFile) return@withContext clip
+            val sha = com.nierduolong.morningbell.dailylog.lan.LanStreamRelay.sha256(file)
+            dailyLog.updateClipSha256(clip.id, sha)
+            clip.copy(contentSha256 = sha)
+        }
+
+    suspend fun pendingSyncOperations(
+        logId: Long,
+        limit: Int = 50,
+    ): List<SyncOutboxEntity> =
+        withContext(Dispatchers.IO) { dailyLog.pendingOutbox(logId, System.currentTimeMillis(), limit) }
+
+    suspend fun acknowledgeSyncOperation(operationId: String) =
+        withContext(Dispatchers.IO) { dailyLog.acknowledgeOutbox(operationId) }
+
+    suspend fun postponeSyncOperation(item: SyncOutboxEntity) =
+        withContext(Dispatchers.IO) {
+            val attempts = item.attempts + 1
+            val delay = SyncRetryPolicy.nextDelayMs(attempts)
+            dailyLog.postponeOutbox(item.operationId, attempts, System.currentTimeMillis() + delay)
+        }
+
+    suspend fun syncEventsAfter(
+        logId: Long,
+        after: Long,
+        limit: Int = 200,
+    ): List<SyncEventEntity> = withContext(Dispatchers.IO) { dailyLog.syncEventsAfter(logId, after, limit) }
+
+    /** 主机的幂等写入口：同一个 operationId 无论重试多少次，都只应用并广播一次。 */
+    suspend fun acceptSyncOperation(
+        logId: Long,
+        actorId: String,
+        operationId: String,
+        entityType: String,
+        operation: String,
+        payloadJson: String,
+    ): Long =
+        withContext(Dispatchers.IO) {
+            syncOperationMutex.withLock {
+                dailyLog.getSyncEventByOperationId(logId, operationId)?.id?.let { return@withLock it }
+                applyOperationPayload(logId, entityType, operation, payloadJson, actorId)
+                dailyLog.insertSyncEvent(
+                    SyncEventEntity(
+                        logId = logId,
+                        operationId = operationId,
+                        entityType = entityType,
+                        operation = operation,
+                        payloadJson = payloadJson,
+                    ),
+                )
+            }
+        }
+
+    suspend fun applyRemoteSyncEvents(
+        logId: Long,
+        events: List<SyncEventEntity>,
+        cursor: Long,
+    ) = withContext(Dispatchers.IO) {
+        syncOperationMutex.withLock {
+            events.forEach { applyOperationPayload(logId, it.entityType, it.operation, it.payloadJson, actorId = null) }
+            dailyLog.updateSyncCursor(logId, cursor, System.currentTimeMillis())
+        }
+    }
+
+    private suspend fun applyOperationPayload(
+        logId: Long,
+        entityType: String,
+        operation: String,
+        payloadJson: String,
+        actorId: String?,
+    ) {
+        val payload = JSONObject(payloadJson)
+        when (entityType) {
+            "comment" -> {
+                val clipUuid = payload.optString("clipUuid").takeIf { it.isNotBlank() } ?: error("留言缺少素材 id")
+                val clip = dailyLog.getClipByClientUuid(logId, clipUuid) ?: return
+                val commentUuid = payload.optString("commentUuid").takeIf { it.isNotBlank() } ?: error("留言 id 无效")
+                val existing = dailyLog.getCommentByClientUuid(commentUuid)
+                dailyLog.upsertComment(
+                    LogCommentEntity(
+                        id = existing?.id ?: 0,
+                        clipId = clip.id,
+                        authorName = payload.optString("authorName").take(40).ifBlank { "成员" },
+                        text = payload.optString("text").take(2_000),
+                        createdAt = payload.optLong("createdAt", System.currentTimeMillis()),
+                        clientUuid = commentUuid,
+                        authorId = payload.optString("authorId").takeIf { it.isNotBlank() },
+                        deleted = operation == "delete" || payload.optBoolean("deleted", false),
+                    ),
+                )
+            }
+            "clip" -> {
+                val clipUuid = payload.optString("clipUuid").takeIf { it.isNotBlank() } ?: error("素材 id 无效")
+                val clip = dailyLog.getClipByClientUuid(logId, clipUuid) ?: return
+                if (actorId != null) {
+                    val log = dailyLog.getLog(logId) ?: error("Log 不存在")
+                    if (actorId != clip.authorId && actorId != log.hostDeviceId) error("无权修改别人的素材")
+                }
+                when (operation) {
+                    "delete" -> {
+                        if (clip.sourceKept && clip.filePath.isNotBlank()) {
+                            runCatching { DailyLogStorage.resolve(context, clip.filePath).delete() }
+                        }
+                        dailyLog.updateClip(
+                            clip.copy(filePath = "", sourceKept = false, transferState = "deleted", localThumbPath = null),
+                        )
+                    }
+                    "caption" -> dailyLog.updateClip(
+                        clip.copy(caption = payload.optString("caption").trim().take(500).takeIf(String::isNotEmpty)),
+                    )
+                    else -> error("不支持的素材操作")
+                }
+            }
+            else -> error("不支持的同步实体")
+        }
+    }
+
+    private suspend fun queueOrPublishOperation(
+        log: DailyLogEntity,
+        entityType: String,
+        entityClientUuid: String,
+        operation: String,
+        payload: JSONObject,
+    ) {
+        if (log.isPersonal) return
+        val operationId = UUID.randomUUID().toString()
+        if (log.role == "owner") {
+            dailyLog.insertSyncEvent(
+                SyncEventEntity(
+                    logId = log.id,
+                    operationId = operationId,
+                    entityType = entityType,
+                    operation = operation,
+                    payloadJson = payload.toString(),
+                ),
+            )
+        } else {
+            dailyLog.enqueueOutbox(
+                SyncOutboxEntity(
+                    logId = log.id,
+                    operationId = operationId,
+                    entityType = entityType,
+                    entityClientUuid = entityClientUuid,
+                    operation = operation,
+                    payloadJson = payload.toString(),
+                ),
+            )
+        }
+    }
 
     suspend fun updateLogClipCaption(
         clipId: Long,
         caption: String,
     ) = withContext(Dispatchers.IO) {
         val clip = dailyLog.getClip(clipId) ?: return@withContext
-        dailyLog.updateClip(clip.copy(caption = caption.trim().takeIf { it.isNotEmpty() }))
+        val value = caption.trim().take(500).takeIf { it.isNotEmpty() }
+        dailyLog.updateClip(clip.copy(caption = value))
+        val log = dailyLog.getLog(clip.logId) ?: return@withContext
+        val uuid = clip.clientUuid ?: return@withContext
+        queueOrPublishOperation(
+            log,
+            "clip",
+            uuid,
+            "caption",
+            JSONObject().put("clipUuid", uuid).put("caption", value),
+        )
     }
 
     /** 本地留言（功能 6；本机版仅自己留言，authorName 用本地昵称） */
@@ -739,12 +1100,33 @@ class AppRepository(
     ) = withContext(Dispatchers.IO) {
         val t = text.trim()
         if (t.isEmpty()) return@withContext
+        val clip = dailyLog.getClip(clipId) ?: return@withContext
+        val log = dailyLog.getLog(clip.logId) ?: return@withContext
+        val commentUuid = UUID.randomUUID().toString()
+        val authorId = if (log.isPersonal) null else runCatching { DeviceIdentity.getOrCreate().deviceId }.getOrNull()
+        val authorName = dailyLogSettings.getNickname()
         dailyLog.insertComment(
             LogCommentEntity(
                 clipId = clipId,
-                authorName = dailyLogSettings.getNickname(),
+                authorName = authorName,
                 text = t,
+                clientUuid = commentUuid,
+                authorId = authorId,
             ),
+        )
+        val clipUuid = clip.clientUuid ?: return@withContext
+        queueOrPublishOperation(
+            log,
+            "comment",
+            commentUuid,
+            "upsert",
+            JSONObject()
+                .put("commentUuid", commentUuid)
+                .put("clipUuid", clipUuid)
+                .put("authorId", authorId)
+                .put("authorName", authorName)
+                .put("text", t)
+                .put("createdAt", System.currentTimeMillis()),
         )
     }
 
@@ -752,6 +1134,19 @@ class AppRepository(
     suspend fun deleteLogClip(id: Long) =
         withContext(Dispatchers.IO) {
             val clip = dailyLog.getClip(id) ?: return@withContext
+            val log = dailyLog.getLog(clip.logId)
+            if (log?.isPersonal == false) {
+                val uuid = clip.clientUuid ?: return@withContext
+                if (clip.sourceKept && clip.filePath.isNotBlank()) {
+                    runCatching { DailyLogStorage.resolve(context, clip.filePath).delete() }
+                }
+                dailyLog.updateClip(
+                    clip.copy(filePath = "", sourceKept = false, transferState = "deleted", localThumbPath = null),
+                )
+                queueOrPublishOperation(log, "clip", uuid, "delete", JSONObject().put("clipUuid", uuid))
+                deleteDailyCompilation(clip.logId, clip.dayEpoch)
+                return@withContext
+            }
             if (clip.sourceKept) {
                 runCatching { DailyLogStorage.resolve(context, clip.filePath).delete() }
             }
@@ -786,6 +1181,9 @@ class AppRepository(
             com.nierduolong.morningbell.dailylog.DailyLogStorage.occupiedBytes(context)
         }
 
+    suspend fun dailyLogStorageBreakdown(): DailyLogStorage.StorageBreakdown =
+        withContext(Dispatchers.IO) { DailyLogStorage.storageBreakdown(context) }
+
     /**
      * 清理不在册的孤儿素材文件（录制中途崩溃、被外部删库等情况留下的半截 mp4），返回删除数。
      * 每次启动跑一次，属于自愈逻辑：不依赖用户手动清理就能避免垃圾无限堆积。
@@ -800,6 +1198,20 @@ class AppRepository(
     suspend fun clearDailyLogThumbnailCache() =
         withContext(Dispatchers.IO) {
             com.nierduolong.morningbell.dailylog.DailyLogStorage.clearThumbnailCache(context)
+        }
+
+    /** 安全清理只处理可重建文件和通过孤儿保险规则的残留，返回真实释放空间。 */
+    suspend fun clearDailyLogSafeCache(): DailyLogStorage.SafeCleanupResult =
+        withContext(Dispatchers.IO) {
+            val before = DailyLogStorage.occupiedBytes(context)
+            val rebuildable = DailyLogStorage.clearRebuildableFiles(context)
+            val known = dailyLog.allClipPaths().toSet()
+            val orphanCount = DailyLogStorage.pruneOrphanFiles(context, known)
+            val after = DailyLogStorage.occupiedBytes(context)
+            DailyLogStorage.SafeCleanupResult(
+                freedBytes = (before - after).coerceAtLeast(rebuildable.freedBytes),
+                deletedFiles = rebuildable.deletedFiles + orphanCount,
+            )
         }
 
     suspend fun clipsForDay(
@@ -874,7 +1286,7 @@ class AppRepository(
                 if (gone) cleaned++
             }
             dailyLog.markDaySourceCleaned(logId, dayEpoch)
-            DailyLogStorage.deleteDayDirIfEmpty(context, dayEpoch)
+            DailyLogStorage.deleteDayDirIfEmpty(context, logId, dayEpoch)
             cleaned
         }
 

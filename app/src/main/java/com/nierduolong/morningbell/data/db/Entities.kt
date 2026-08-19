@@ -70,8 +70,8 @@ data class BirthdayReminderEntity(
 )
 
 /**
- * Setlog 风格「每日日志」房间。当前版本仅本机一条 isPersonal=true 记录；
- * inviteCode/多人字段为 Phase 2（真正多人同步）预留，暂不启用邀请流程。
+ * Setlog 风格「每日日志」房间。个人 Log 与附近多人 Log 共用此表；附近模式由一台手机
+ * 临时担任局域网主机，不依赖云端服务器。
  */
 @Entity(tableName = "daily_logs")
 data class DailyLogEntity(
@@ -79,13 +79,31 @@ data class DailyLogEntity(
     val name: String,
     val isPersonal: Boolean = true,
     val inviteCode: String? = null,
+    /** 跨设备稳定 id；本机个人日志可为空，附近多人 Log 创建时生成 UUID。 */
+    val remoteId: String? = null,
+    /** personal / owner / member。用字符串存库，便于后续协议演进。 */
+    val role: String = "personal",
+    /** 附近 Log 的权威节点设备 id；断线后用它判断是否仍是同一个房间。 */
+    val hostDeviceId: String? = null,
+    val memberCount: Int = 1,
+    /** 已拉取到的主机事件游标。 */
+    val lastSyncCursor: Long = 0,
+    val lastSyncedAt: Long? = null,
+    /** 最近一次发现的私网端点；只作重连提示，真正连接仍需验证地址属于当前 Wi-Fi。 */
+    val lastHostAddress: String? = null,
+    val lastHostPort: Int? = null,
+    val lastHostServiceName: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
 /** 一条拍摄素材：时长不限（Setlog 原版 2–4 秒，此处按需求不设硬性上限） */
 @Entity(
     tableName = "log_clips",
-    indices = [Index(value = ["logId", "dayEpoch"])],
+    indices = [
+        Index(value = ["logId", "dayEpoch"]),
+        Index(value = ["logId", "clientUuid"], unique = true),
+        Index(value = ["logId", "remoteId"], unique = true),
+    ],
 )
 data class LogClipEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -97,6 +115,16 @@ data class LogClipEntity(
     val durationMs: Long,
     val caption: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    /** 拍摄设备生成的幂等键；上传重试不能生成重复素材。 */
+    val clientUuid: String? = null,
+    val remoteId: String? = null,
+    val authorId: String? = null,
+    /** 远端素材尚未下载时，缩略图仍可单独落盘展示。 */
+    val localThumbPath: String? = null,
+    /** local / metadata_only / available_remote / transferring / failed。 */
+    val transferState: String = "local",
+    /** 完整 MP4 的 SHA-256；流式传输完成后用于端到端校验。 */
+    val contentSha256: String? = null,
     /**
      * 原始素材文件是否还在。按保留策略清理后置为 false：时间、说明、留言都留着，
      * 只是那一条视频已经被合成结果代替了。
@@ -134,12 +162,17 @@ data class DayLogSummary(
      * 全部素材都已清理时为 null，由 Repository 回落到当天的合成结果。
      */
     val coverPath: String?,
+    /** 远端素材没有本地视频时使用的小型 JPEG 缓存。 */
+    val coverThumbPath: String?,
 )
 
 /** clip 下的留言；本机版仅自己留言，字段结构为 Phase 2 多人评论预留 */
 @Entity(
     tableName = "log_comments",
-    indices = [Index(value = ["clipId"])],
+    indices = [
+        Index(value = ["clipId"]),
+        Index(value = ["clientUuid"], unique = true),
+    ],
 )
 data class LogCommentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -147,5 +180,64 @@ data class LogCommentEntity(
     val authorName: String,
     val text: String,
     val createdAt: Long = System.currentTimeMillis(),
+    val clientUuid: String? = null,
+    val remoteId: String? = null,
+    val authorId: String? = null,
+    /** 同步删除必须保留墓碑，否则离线成员会把留言重新带回来。 */
+    val deleted: Boolean = false,
 )
 
+/** 附近 Log 成员。设备身份由 Android Keystore 公钥稳定标识，不依赖手机号或云账号。 */
+@Entity(
+    tableName = "log_members",
+    indices = [Index(value = ["logId", "authorId"], unique = true)],
+)
+data class LogMemberEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val logId: Long,
+    val authorId: String,
+    val nickname: String,
+    val publicKey: String,
+    val avatarSeed: String,
+    /** 由主机从已认证请求的 socket 记录，客户端不能伪造任意公网地址。 */
+    val sourceAddress: String? = null,
+    val sourcePort: Int? = null,
+    val joinedAt: Long = System.currentTimeMillis(),
+    val lastSeenAt: Long = System.currentTimeMillis(),
+)
+
+/** 本机尚未送达主机的操作。payload 只放小元数据，视频本体永远不进入 SQLite。 */
+@Entity(
+    tableName = "sync_outbox",
+    indices = [
+        Index(value = ["operationId"], unique = true),
+        Index(value = ["logId", "nextAttemptAt"]),
+    ],
+)
+data class SyncOutboxEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val logId: Long,
+    val operationId: String,
+    val entityType: String,
+    val entityClientUuid: String,
+    val operation: String,
+    val payloadJson: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val attempts: Int = 0,
+    val nextAttemptAt: Long = 0,
+)
+
+/** 主机发布给成员的单调事件流；删除也作为事件发送，客户端按 cursor 增量拉取。 */
+@Entity(
+    tableName = "sync_events",
+    indices = [Index(value = ["logId", "id"])],
+)
+data class SyncEventEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val logId: Long,
+    val operationId: String,
+    val entityType: String,
+    val operation: String,
+    val payloadJson: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)

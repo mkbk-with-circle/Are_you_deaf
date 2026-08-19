@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,7 +56,10 @@ import com.nierduolong.morningbell.MorningBellApp
 import com.nierduolong.morningbell.R
 import com.nierduolong.morningbell.core.DailyLogStats
 import com.nierduolong.morningbell.dailylog.CompileCoordinator
+import com.nierduolong.morningbell.dailylog.CompilePreflight
+import com.nierduolong.morningbell.dailylog.CompilePreflightReport
 import com.nierduolong.morningbell.dailylog.ExportShare
+import com.nierduolong.morningbell.dailylog.lan.NearbySessionCoordinator
 import com.nierduolong.morningbell.data.AppRepository
 import com.nierduolong.morningbell.data.db.LogClipEntity
 import com.nierduolong.morningbell.ui.theme.MediaTokens
@@ -79,7 +83,10 @@ fun DayDetailRoute(
     val app = context.applicationContext as MorningBellApp
     val scope = rememberCoroutineScope()
 
-    val logId by repo.personalLogIdFlow.collectAsState()
+    val logId by repo.currentLogIdFlow.collectAsState()
+    val logs by repo.dailyLogsFlow.collectAsState(initial = emptyList())
+    val activeLog = remember(logs, logId) { logs.firstOrNull { it.id == logId } }
+    val nearbySession by NearbySessionCoordinator.state.collectAsState()
     val compileState by CompileCoordinator.state.collectAsState()
     // 用 null 表示「还没查出来」，与「这一天确实没有素材」区分开，
     // 否则首帧的空列表会被当成已清空而立刻退出页面
@@ -96,9 +103,59 @@ fun DayDetailRoute(
     var selectedClip by remember { mutableStateOf<LogClipEntity?>(null) }
     var exporting by remember { mutableStateOf(false) }
     var confirmCleanSources by remember { mutableStateOf(false) }
+    var showCompilePreflight by remember { mutableStateOf(false) }
+    var checkingCompilePreflight by remember { mutableStateOf(false) }
+    var compilePreflightReport by remember { mutableStateOf<CompilePreflightReport?>(null) }
     val sheetState = rememberModalBottomSheetState()
     // 原始素材是否还在。全部清理过的日期不能再合成，也没有可播放的单条素材
     val hasSources = clips.any { it.sourceKept }
+    val hasPotentialCompileInputs = hasSources || (activeLog?.isPersonal == false && clips.any { it.clientUuid != null })
+
+    fun startDayCompile(excludedClipIds: Set<Long> = emptySet()) {
+        val id = logId ?: return
+        showCompilePreflight = false
+        CompileCoordinator.start(
+            scope = app.appScope,
+            context = context,
+            repo = repo,
+            logId = id,
+            dayEpoch = dayEpoch,
+            force = compilation != null,
+            excludedClipIds = excludedClipIds,
+        )
+    }
+
+    fun inspectDayBeforeCompile() {
+        val id = logId ?: return
+        if (activeLog?.isPersonal != false) {
+            startDayCompile()
+            return
+        }
+        showCompilePreflight = true
+        checkingCompilePreflight = true
+        compilePreflightReport = null
+        scope.launch {
+            val result = runCatching { CompilePreflight.inspect(repo, id, dayEpoch) }
+            checkingCompilePreflight = false
+            result.onSuccess { compilePreflightReport = it }
+                .onFailure {
+                    showCompilePreflight = false
+                    android.widget.Toast.makeText(context, it.message ?: "无法检查附近素材", android.widget.Toast.LENGTH_SHORT).show()
+                }
+        }
+    }
+
+    if (showCompilePreflight) {
+        CompilePreflightDialog(
+            checking = checkingCompilePreflight,
+            report = compilePreflightReport,
+            onRetry = ::inspectDayBeforeCompile,
+            onCompile = { skip ->
+                startDayCompile(if (skip) compilePreflightReport?.unavailableClipIds.orEmpty() else emptySet())
+            },
+            onDismiss = { showCompilePreflight = false },
+        )
+    }
 
     // 素材被删空后这一天已经没有内容可看，直接退回上一页
     LaunchedEffect(loadedClips) {
@@ -108,6 +165,24 @@ fun DayDetailRoute(
 
     val runningThisDay =
         (compileState as? CompileCoordinator.State.Running)?.takeIf { it.dayEpoch == dayEpoch }
+
+    LaunchedEffect(compileState) {
+        when (val state = compileState) {
+            is CompileCoordinator.State.Success -> {
+                if (state.dayEpoch == dayEpoch) {
+                    android.widget.Toast.makeText(context, context.getString(R.string.dailylog_compile_done), android.widget.Toast.LENGTH_SHORT).show()
+                    CompileCoordinator.consumeTerminalState()
+                }
+            }
+            is CompileCoordinator.State.Failed -> {
+                if (state.dayEpoch == dayEpoch) {
+                    android.widget.Toast.makeText(context, state.message, android.widget.Toast.LENGTH_LONG).show()
+                    CompileCoordinator.consumeTerminalState()
+                }
+            }
+            else -> Unit
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -243,19 +318,9 @@ fun DayDetailRoute(
                             modifier = Modifier.padding(top = 10.dp),
                         )
                     }
-                    if (hasSources) {
+                    if (hasPotentialCompileInputs) {
                         Button(
-                            onClick = {
-                                val id = logId ?: return@Button
-                                CompileCoordinator.start(
-                                    scope = app.appScope,
-                                    context = context,
-                                    repo = repo,
-                                    logId = id,
-                                    dayEpoch = dayEpoch,
-                                    force = compilation != null,
-                                )
-                            },
+                            onClick = ::inspectDayBeforeCompile,
                             enabled = runningThisDay == null,
                             shape = MaterialTheme.shapes.small,
                             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
@@ -311,14 +376,16 @@ fun DayDetailRoute(
                                     .aspectRatio(1f)
                                     .clickable { selectedClip = clip },
                         ) {
-                            if (clip.sourceKept) {
-                                VideoThumbnail(
-                                    path = clip.filePath,
-                                    modifier = Modifier.fillMaxSize(),
-                                    durationMs = clip.durationMs,
-                                )
-                            } else {
-                                CleanedClipTile(clip.createdAt)
+                            when {
+                                clip.sourceKept || clip.localThumbPath != null ->
+                                    VideoThumbnail(
+                                        path = clip.filePath,
+                                        thumbnailPath = clip.localThumbPath,
+                                        modifier = Modifier.fillMaxSize(),
+                                        durationMs = clip.durationMs,
+                                    )
+                                clip.transferState == "available_remote" -> RemoteClipTile(clip.createdAt)
+                                else -> CleanedClipTile(clip.createdAt)
                             }
                             if (!clip.caption.isNullOrBlank()) {
                                 Box(
@@ -339,6 +406,7 @@ fun DayDetailRoute(
 
     val clip = selectedClip
     if (clip != null) {
+        val selectedItems = playbackItemsFor(listOf(clip), activeLog, nearbySession)
         ModalBottomSheet(
             onDismissRequest = { selectedClip = null },
             sheetState = sheetState,
@@ -346,8 +414,9 @@ fun DayDetailRoute(
             ClipDetailSheet(
                 repo = repo,
                 clip = clip,
+                playable = selectedItems.isNotEmpty(),
                 onPlay = {
-                    PlaybackQueue.set(listOf(clip.filePath), formatDayLabel(dayEpoch))
+                    PlaybackQueue.setItems(selectedItems, formatDayLabel(dayEpoch))
                     selectedClip = null
                     onOpenPlayer()
                 },
@@ -411,11 +480,31 @@ private fun CleanedClipTile(createdAt: Long) {
     }
 }
 
+@Composable
+private fun RemoteClipTile(createdAt: Long) {
+    val time =
+        remember(createdAt) {
+            DateTimeFormatter.ofPattern("HH:mm").format(
+                Instant.ofEpochMilli(createdAt).atZone(ZoneId.systemDefault()),
+            )
+        }
+    Box(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Filled.Wifi, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(time, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 /** 单条素材：播放、编辑说明、留言、删除 */
 @Composable
 private fun ClipDetailSheet(
     repo: AppRepository,
     clip: LogClipEntity,
+    playable: Boolean,
     onPlay: () -> Unit,
     onDeleted: () -> Unit,
 ) {
@@ -442,16 +531,22 @@ private fun ClipDetailSheet(
                         .size(72.dp)
                         .clip(MaterialTheme.shapes.small)
                         // 素材已清理时不给播放入口，点了只会黑屏
-                        .clickable(enabled = clip.sourceKept, onClick = onPlay),
+                        .clickable(enabled = playable, onClick = onPlay),
             ) {
-                if (clip.sourceKept) {
-                    VideoThumbnail(path = clip.filePath, modifier = Modifier.fillMaxSize())
+                if ((clip.sourceKept && clip.filePath.isNotBlank()) || clip.localThumbPath != null) {
+                    VideoThumbnail(
+                        path = clip.filePath,
+                        thumbnailPath = clip.localThumbPath,
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     Icon(
                         Icons.Filled.PlayArrow,
                         contentDescription = null,
                         tint = MediaTokens.onMedia,
                         modifier = Modifier.align(Alignment.Center),
                     )
+                } else if (clip.transferState == "available_remote") {
+                    RemoteClipTile(clip.createdAt)
                 } else {
                     CleanedClipTile(clip.createdAt)
                 }
@@ -462,6 +557,10 @@ private fun ClipDetailSheet(
                 Text(
                     if (clip.sourceKept) {
                         DailyLogStats.formatDuration(clip.durationMs)
+                    } else if (playable) {
+                        "从成员手机流式播放"
+                    } else if (clip.transferState == "available_remote") {
+                        "成员设备当前离线"
                     } else {
                         stringResource(R.string.dailylog_clip_source_cleaned)
                     },

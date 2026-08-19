@@ -7,5 +7,9 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="external" path="dailylog/" />
+        <exclude domain="sharedpref" path="nearby_transfer_session.xml" />
     </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="nearby_transfer_session.xml" />
+    </device-transfer>
 </data-extraction-rules>
