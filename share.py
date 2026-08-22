@@ -8,6 +8,8 @@ import hashlib
 import html
 import mimetypes
 import os
+import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -44,9 +46,27 @@ def _missing_hint(raw: str, resolved: Path) -> str:
     if downloads.exists() and resolved != downloads:
         lines.append(f"  本机下载目录是：{downloads}")
     if sys.platform == "win32":
-        lines.append(r"  Windows 请写：python share.py %USERPROFILE%\Downloads")
-        lines.append(r"  或：          python share.py D:\某个文件夹")
+        lines.append('  PowerShell 请写：python share.py "$HOME\\Downloads"')
+        lines.append(r'  CMD 请写：       python share.py "%USERPROFILE%\Downloads"')
+        lines.append(r'  或使用完整路径： python share.py "D:\某个文件夹"')
     return "\n".join(lines)
+
+
+def _resolve_input_path(value: str) -> Path:
+    """Expand both shell styles and tolerate an unconverted Git Bash /c/... argument."""
+    expanded = os.path.expandvars(value)
+    if sys.platform == "win32":
+        msys = re.fullmatch(r"/([A-Za-z])(?:/(.*))?", expanded)
+        if msys:
+            rest = msys.group(2) or ""
+            expanded = f"{msys.group(1).upper()}:/{rest}"
+    return Path(expanded).expanduser().resolve()
+
+
+def _is_wsl() -> bool:
+    return sys.platform == "linux" and (
+        bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in platform.release().lower()
+    )
 
 _VPN_IFACE = ("utun", "ipsec", "ppp", "tun", "wg", "wintun", "tap", "wireguard")
 
@@ -334,11 +354,17 @@ class Server(ThreadingHTTPServer):
 def main() -> int:
     print(f"[share] Python {sys.version.split()[0]}  {sys.executable}", flush=True)
     _reexec_if_conda()
+    if _is_wsl():
+        print(
+            "警告：当前是 WSL 的 Linux Python，不是 Windows Python；"
+            "手机热点可能无法直接访问 WSL NAT。建议改用 PowerShell 或 Git Bash。",
+            flush=True,
+        )
     parser = argparse.ArgumentParser(description="让电脑成为带临时令牌的附近快传分享端")
     parser.add_argument("paths", nargs="+", help="一个或多个文件/文件夹")
     parser.add_argument("-p", "--port", type=int, default=8765)
     args = parser.parse_args()
-    paths = [Path(value).expanduser().resolve() for value in args.paths]
+    paths = [_resolve_input_path(value) for value in args.paths]
     missing = []
     for raw, path in zip(args.paths, paths):
         if not path.exists():
