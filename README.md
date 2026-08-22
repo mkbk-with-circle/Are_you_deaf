@@ -27,13 +27,14 @@ python3 share.py ~/Downloads ~/Movies/a.mp4 ~/Pictures
 
 终端里选标成「热点/Wi-Fi」的地址，在手机系统浏览器打开。传完 Ctrl+C。
 
-Windows：
+Windows（不要写 `~/Download`，那不是 Windows 路径）：
 
 ```powershell
+python share.py %USERPROFILE%\Downloads
 python share.py D:\夹1 D:\夹2 E:\a.mp4
 ```
 
-防火墙放行 Python（专用网络）。
+防火墙放行 Python（专用网络）。路径不对时脚本会直接退出并打印「路径不存在」。
 
 ## 手机 App → 电脑
 

@@ -25,14 +25,28 @@ _CONDA_MARKERS = ("anaconda", "miniconda", "miniforge", "/opt/anaconda")
 
 
 def _reexec_if_conda() -> None:
+    # 只在 macOS 换解释器；Windows/Git Bash 里 /usr/bin/python3 是假路径，exec 后会静默退出
+    if sys.platform != "darwin":
+        return
     exe = (sys.executable or "").lower()
     if not any(marker in exe for marker in _CONDA_MARKERS):
         return
     for candidate in ("/opt/homebrew/bin/python3", "/usr/bin/python3"):
         if Path(candidate).exists():
-            print(f"当前是 conda Python，macOS 会拦局域网入站，改用 {candidate}")
+            print(f"当前是 conda Python，macOS 会拦局域网入站，改用 {candidate}", flush=True)
             os.execv(candidate, [candidate, str(Path(__file__).resolve()), *sys.argv[1:]])
-    print("警告：请用 /usr/bin/python3 或 Homebrew python3 启动，不要用 conda。")
+    print("警告：请用 /usr/bin/python3 或 Homebrew python3 启动，不要用 conda。", flush=True)
+
+
+def _missing_hint(raw: str, resolved: Path) -> str:
+    lines = [f"路径不存在：{raw}", f"  已解析成：{resolved}"]
+    downloads = Path.home() / "Downloads"
+    if downloads.exists() and resolved != downloads:
+        lines.append(f"  本机下载目录是：{downloads}")
+    if sys.platform == "win32":
+        lines.append(r"  Windows 请写：python share.py %USERPROFILE%\Downloads")
+        lines.append(r"  或：          python share.py D:\某个文件夹")
+    return "\n".join(lines)
 
 _VPN_IFACE = ("utun", "ipsec", "ppp", "tun", "wg", "wintun", "tap", "wireguard")
 
@@ -66,7 +80,7 @@ def _ifaces() -> list[tuple[str, str]]:
 
 
 def _ifaces_ipconfig() -> list[tuple[str, str]]:
-    """Windows / 无 ifconfig 时用 ipconfig 列 IPv4。"""
+    """Windows 用 ipconfig 列 IPv4。"""
     try:
         text = subprocess.check_output(["ipconfig"], text=True, errors="replace")
     except Exception:
@@ -318,15 +332,20 @@ class Server(ThreadingHTTPServer):
 
 
 def main() -> int:
+    print(f"[share] Python {sys.version.split()[0]}  {sys.executable}", flush=True)
     _reexec_if_conda()
     parser = argparse.ArgumentParser(description="让电脑成为带临时令牌的附近快传分享端")
     parser.add_argument("paths", nargs="+", help="一个或多个文件/文件夹")
     parser.add_argument("-p", "--port", type=int, default=8765)
     args = parser.parse_args()
     paths = [Path(value).expanduser().resolve() for value in args.paths]
-    missing = [str(path) for path in paths if not path.exists()]
+    missing = []
+    for raw, path in zip(args.paths, paths):
+        if not path.exists():
+            print(_missing_hint(raw, path), flush=True)
+            missing.append(str(path))
     if missing:
-        parser.error("路径不存在：" + ", ".join(missing))
+        return 2
     Handler.token = secrets.token_urlsafe(24)
     Handler.root = None
     Handler.flat = {}
@@ -351,4 +370,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"启动失败：{exc}", flush=True)
+        raise
