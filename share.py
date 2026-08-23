@@ -17,7 +17,7 @@ import sys
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # 客户端握手后立刻断开（热点网关探测、系统预检），不是真正访问失败
 _HARMLESS_ERRNOS = {32, 54, 57, 104}
@@ -158,6 +158,17 @@ def unique_names(paths: list[Path]) -> dict[str, Path]:
     return output
 
 
+def file_row(name: str, href: str, size: int) -> str:
+    escaped_name = html.escape(name)
+    return (
+        "<li><span class='file-main'>"
+        f"<a href='{href}'>{escaped_name}</a> · {size:,} B"
+        "</span><span class='file-actions'>"
+        f"<a class='download' href='{href}?download=1' download>下载</a>"
+        "</span></li>"
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     token = ""
@@ -242,8 +253,11 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             suffix = "/" if child.is_dir() else ""
             label = ("📁 " if child.is_dir() else "") + html.escape(child.name) + suffix
-            size = "" if child.is_dir() else f" · {child.stat().st_size:,} B"
-            rows.append(f"<li><a href='{quote(child.name)}{suffix}'>{label}</a>{size}</li>")
+            href = f"{quote(child.name)}{suffix}"
+            if child.is_dir():
+                rows.append(f"<li><a href='{href}'>{label}</a></li>")
+            else:
+                rows.append(file_row(child.name, href, child.stat().st_size))
         self._html("".join(rows), body)
 
     def _source_index(self, body: bool) -> None:
@@ -252,16 +266,11 @@ class Handler(BaseHTTPRequestHandler):
             if path.is_dir():
                 rows.append(f"<li><a href='{quote(name)}/'>{html.escape(name)}/</a></li>")
             else:
-                rows.append(
-                    f"<li><a href='{quote(name)}'>{html.escape(name)}</a> · {path.stat().st_size:,} B</li>"
-                )
+                rows.append(file_row(name, quote(name), path.stat().st_size))
         self._html("".join(rows), body)
 
     def _flat_index(self, body: bool) -> None:
-        rows = "".join(
-            f"<li><a href='{quote(name)}'>{html.escape(name)}</a> · {path.stat().st_size:,} B</li>"
-            for name, path in sorted(self.flat.items())
-        )
+        rows = "".join(file_row(name, quote(name), path.stat().st_size) for name, path in sorted(self.flat.items()))
         self._html(rows, body)
 
     def _html(self, rows: str, body: bool) -> None:
@@ -269,8 +278,11 @@ class Handler(BaseHTTPRequestHandler):
             "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
             "<meta name='referrer' content='no-referrer'><title>附近快传</title>"
             "<style>body{max-width:900px;margin:30px auto;padding:0 18px;font:16px system-ui;background:#101512;color:#edf5f1}"
-            "a{color:#72ddb2;word-break:break-all}li{padding:9px 0;border-bottom:1px solid #28352f}</style>"
-            "<h1>电脑附近快传</h1><p>只在当前局域网中有效；关闭终端后立即停止。</p><ul>"
+            "a{color:#72ddb2;word-break:break-all}ul{padding:0;list-style:none}"
+            "li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid #28352f}"
+            ".file-main{min-width:0}.file-actions{flex:none}.download{display:inline-block;padding:7px 12px;border-radius:9px;"
+            "background:#72ddb2;color:#10241c;text-decoration:none;font-weight:700}</style>"
+            "<h1>电脑附近快传</h1><p>点击文件名可预览；点击右侧“下载”会保存原文件。只在当前局域网中有效；关闭终端后立即停止。</p><ul>"
             + rows
             + "</ul>"
         ).encode()
@@ -326,6 +338,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("Last-Modified", modified)
         self.send_header("X-Content-Type-Options", "nosniff")
+        query = parse_qs(urlparse(self.path).query)
+        if query.get("download", [""])[0].lower() in {"1", "true", "yes"}:
+            fallback = "".join(char if 32 <= ord(char) < 127 and char not in {'"', '\\'} else "_" for char in path.name)
+            self.send_header(
+                "Content-Disposition",
+                f"attachment; filename=\"{fallback or 'download'}\"; filename*=UTF-8''{quote(path.name, safe='')}",
+            )
         self.send_header("Connection", "close")
         if status == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{total}")

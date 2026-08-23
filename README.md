@@ -27,6 +27,9 @@ python3 share.py ~/Downloads ~/Movies/a.mp4 ~/Pictures
 
 终端里选标成「热点/Wi-Fi」的地址，在手机系统浏览器打开。传完 Ctrl+C。
 
+网页中点击文件名用于浏览器预览；点击每个文件右侧的「下载」按钮会以附件方式保存原文件，
+不会停留在图片、PDF 或文本的预览页面。大文件仍支持 HTTP Range 断点续传。
+
 Windows 默认目录名是 `Downloads` 复数，不是 `Download`。
 
 PowerShell：
